@@ -3,223 +3,230 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>管理后台 · 答题冒险</title>
+  <title>Trivia Board Game - Admin</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
-<!-- ── Home ───────────────────────────────────────────────────────────────── -->
-<div id="view-home" class="view active center">
-  <div style="width:100%;max-width:400px">
-    <div class="text-center mb-8">
-      <div class="logo">管理<span>后台</span></div>
-      <div class="text-muted text-sm">答题冒险游戏</div>
+<!-- ── HOME VIEW ──────────────────────────────────────────────────────────── -->
+<div id="view-home" class="view active">
+  <div class="home-card card">
+    <div class="home-title">🎲 Trivia Board Game</div>
+    <div class="home-sub">管理员控制台</div>
+
+    <div class="tabs" id="home-tabs">
+      <button class="tab-btn active" data-tab="tab-create">创建房间</button>
+      <button class="tab-btn" data-tab="tab-login">进入已有房间</button>
     </div>
 
-    <!-- Tab: create or login -->
-    <div class="card mt-16">
-      <div class="tab-bar">
-        <button class="tab-btn active" onclick="switchHomeTab('create', this)">创建新房间</button>
-        <button class="tab-btn" onclick="switchHomeTab('login', this)">进入已有房间</button>
+    <!-- Create tab -->
+    <div id="tab-create" class="tab-panel active">
+      <div class="form-group">
+        <label>管理员密码</label>
+        <input id="cr-password" class="input" type="password" placeholder="设置管理员密码">
       </div>
-
-      <!-- Create -->
-      <div id="home-tab-create" class="tab-panel active">
-        <div id="create-error" class="alert alert-error" style="display:none"></div>
-        <div class="form-group">
-          <label>管理员密码</label>
-          <input id="c-password" type="password" placeholder="设置管理员密码">
-        </div>
-        <div class="form-group">
-          <label>棋盘格子数（10-100）</label>
-          <input id="c-board" type="number" value="30" min="10" max="100">
-        </div>
-        <div class="form-group">
-          <label>每题答题时限（秒，5-120）</label>
-          <input id="c-time" type="number" value="30" min="5" max="120">
-        </div>
-        <div class="form-group">
-          <label>几人到达终点后提示可结束</label>
-          <input id="c-min" type="number" value="3" min="1" max="100">
-        </div>
-        <button class="btn btn-primary btn-full mt-12" onclick="doCreate()">创建房间</button>
+      <div class="form-group">
+        <label>棋盘格数（10-200）</label>
+        <input id="cr-board-size" class="input" type="number" value="30" min="10" max="200">
       </div>
-
-      <!-- Login -->
-      <div id="home-tab-login" class="tab-panel">
-        <div id="login-error" class="alert alert-error" style="display:none"></div>
-        <div class="form-group">
-          <label>房间号</label>
-          <input id="l-room" placeholder="输入6位房间号" maxlength="6" style="text-transform:uppercase;letter-spacing:0.1em">
-        </div>
-        <div class="form-group">
-          <label>管理员密码</label>
-          <input id="l-password" type="password" placeholder="输入管理员密码">
-        </div>
-        <button class="btn btn-primary btn-full mt-12" onclick="doLogin()">进入房间</button>
+      <div class="form-group">
+        <label>答题时间（秒）</label>
+        <input id="cr-time-limit" class="input" type="number" value="30" min="5" max="300">
       </div>
+      <div class="form-group">
+        <label>幸运格子编号（逗号分隔，可选）</label>
+        <input id="cr-lucky" class="input" type="text" placeholder="例如: 5,10,15,20">
+      </div>
+      <button id="btn-create" class="btn btn-primary btn-lg w-full">创建房间</button>
     </div>
 
-    <div class="text-center mt-12 text-sm text-muted">
-      <a href="index.html" style="color:var(--primary);text-decoration:none">← 玩家入口</a>
+    <!-- Login tab -->
+    <div id="tab-login" class="tab-panel">
+      <div class="form-group">
+        <label>房间 ID</label>
+        <input id="lg-room" class="input" type="text" placeholder="输入房间ID" style="text-transform:uppercase;">
+      </div>
+      <div class="form-group">
+        <label>管理员密码</label>
+        <input id="lg-password" class="input" type="password" placeholder="输入密码">
+      </div>
+      <button id="btn-login" class="btn btn-primary btn-lg w-full">进入房间</button>
     </div>
+
+    <p id="home-error" class="text-muted mt-2 text-center hidden" style="color:var(--danger);"></p>
   </div>
 </div>
 
-<!-- ── Setup ───────────────────────────────────────────────────────────────── -->
+<!-- ── SETUP VIEW ─────────────────────────────────────────────────────────── -->
 <div id="view-setup" class="view">
-  <div class="admin-header">
-    <div>
-      <div class="header-title">房间设置</div>
-      <div class="header-sub" id="setup-room-info"></div>
+  <nav class="admin-nav">
+    <div class="admin-nav-brand">🎲 Admin</div>
+    <div id="setup-room-info" class="admin-nav-info"></div>
+    <div style="display:flex;gap:0.5rem;align-items:center;">
+      <span id="setup-player-count" class="badge badge-info">0 玩家</span>
+      <button id="btn-start-game" class="btn btn-success btn-sm">开始游戏</button>
     </div>
-    <div class="header-right">
-      <div class="room-id-badge" id="setup-room-badge"></div>
-      <button class="btn btn-success" onclick="doStartGame()" id="btn-start">开始游戏</button>
-    </div>
-  </div>
+  </nav>
 
-  <div class="container" style="padding-top:20px">
-    <div class="tab-bar">
-      <button class="tab-btn active" onclick="switchSetupTab('questions', this)">题库管理</button>
-      <button class="tab-btn" onclick="switchSetupTab('surprise', this)">惊喜格设置</button>
-      <button class="tab-btn" onclick="switchSetupTab('settings', this)">房间设置</button>
+  <div class="setup-content">
+    <div class="tabs" id="setup-tabs">
+      <button class="tab-btn active" data-tab="sp-tab-questions">题目管理</button>
+      <button class="tab-btn" data-tab="sp-tab-lucky">幸运格</button>
+      <button class="tab-btn" data-tab="sp-tab-settings">设置</button>
+      <button class="tab-btn" data-tab="sp-tab-players">玩家</button>
     </div>
 
     <!-- Questions tab -->
-    <div id="setup-tab-questions" class="tab-panel active">
-      <div class="card mb-8" id="add-q-card">
-        <div class="card-title">添加题目</div>
-        <div id="add-q-error" class="alert alert-error" style="display:none"></div>
+    <div id="sp-tab-questions" class="tab-panel active">
+      <div class="setup-header">
+        <h3>题库 <span id="q-count-badge" class="badge badge-info">0 题</span></h3>
+        <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
+          <button id="btn-add-q-modal" class="btn btn-primary btn-sm">+ 手动添加</button>
+          <label class="btn btn-secondary btn-sm" style="cursor:pointer;">
+            📥 导入文件
+            <input id="inp-import-file" type="file" accept=".txt,.md,.pdf,.docx" style="display:none;">
+          </label>
+        </div>
+      </div>
+
+      <!-- Add question form (inline) -->
+      <div id="add-q-form" class="card hidden" style="margin-bottom:1rem;">
+        <h3 style="margin-bottom:0.75rem;">添加题目</h3>
         <div class="form-group">
           <label>题目内容</label>
-          <textarea id="q-text-input" placeholder="输入题目内容"></textarea>
+          <textarea id="nq-text" class="input" rows="2" placeholder="输入题目内容"></textarea>
         </div>
-        <div id="q-options-inputs">
-          <div class="form-group">
-            <label>选项 A</label>
-            <input class="q-opt" placeholder="选项A内容">
-          </div>
-          <div class="form-group">
-            <label>选项 B</label>
-            <input class="q-opt" placeholder="选项B内容">
-          </div>
-          <div class="form-group">
-            <label>选项 C（可选）</label>
-            <input class="q-opt" placeholder="选项C内容（留空则不添加）">
-          </div>
-          <div class="form-group">
-            <label>选项 D（可选）</label>
-            <input class="q-opt" placeholder="选项D内容（留空则不添加）">
-          </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.5rem;margin-bottom:0.5rem;">
+          <div class="form-group"><label>选项 A</label><input id="nq-a" class="input" placeholder="选项A"></div>
+          <div class="form-group"><label>选项 B</label><input id="nq-b" class="input" placeholder="选项B"></div>
+          <div class="form-group"><label>选项 C</label><input id="nq-c" class="input" placeholder="选项C（可选）"></div>
+          <div class="form-group"><label>选项 D</label><input id="nq-d" class="input" placeholder="选项D（可选）"></div>
         </div>
         <div class="form-group">
-          <label>正确答案</label>
-          <select id="q-correct">
-            <option value="0">A</option>
-            <option value="1">B</option>
-            <option value="2">C</option>
-            <option value="3">D</option>
-          </select>
+          <label>正确答案（可多选）</label>
+          <div style="display:flex;gap:0.75rem;margin-top:0.25rem;">
+            <label style="display:flex;align-items:center;gap:0.3rem;margin:0;"><input type="checkbox" id="nq-ca" value="0"> A</label>
+            <label style="display:flex;align-items:center;gap:0.3rem;margin:0;"><input type="checkbox" id="nq-cb" value="1"> B</label>
+            <label style="display:flex;align-items:center;gap:0.3rem;margin:0;"><input type="checkbox" id="nq-cc" value="2"> C</label>
+            <label style="display:flex;align-items:center;gap:0.3rem;margin:0;"><input type="checkbox" id="nq-cd" value="3"> D</label>
+          </div>
         </div>
-        <button class="btn btn-primary" onclick="doAddQuestion()">添加到题库</button>
+        <div style="display:flex;gap:0.5rem;">
+          <button id="btn-save-q" class="btn btn-primary btn-sm">保存题目</button>
+          <button id="btn-cancel-q" class="btn btn-secondary btn-sm">取消</button>
+        </div>
       </div>
 
-      <div id="add-q-success" class="alert alert-success" style="display:none"></div>
-
-      <div class="card">
-        <div class="flex items-center justify-between mb-8">
-          <div class="card-title" style="margin-bottom:0">已有题目 <span id="q-count" class="text-muted text-sm">(0题)</span></div>
-        </div>
-        <div id="question-list"></div>
-      </div>
+      <div id="questions-list"></div>
+      <p id="q-empty" class="text-muted text-center" style="padding:1rem;">暂无题目，请添加或导入</p>
     </div>
 
-    <!-- Surprise tab -->
-    <div id="setup-tab-surprise" class="tab-panel">
-      <div class="card">
-        <div class="card-title">惊喜格设置</div>
-        <div class="text-muted text-sm mb-8">输入格子编号（1 到 棋盘格数-1），玩家踩到后获得惊喜记录。</div>
-        <div id="surprise-error" class="alert alert-error" style="display:none"></div>
-        <div class="form-group">
-          <label>添加惊喜格（输入编号）</label>
-          <div class="gap-8">
-            <input id="surprise-inp" type="number" placeholder="格子编号" min="1" style="flex:1">
-            <button class="btn btn-success" onclick="doAddSurprise()">添加</button>
-          </div>
-        </div>
-        <div id="surprise-list" class="surprise-grid"></div>
-        <div class="text-muted text-sm mt-8">点击格子编号可删除</div>
+    <!-- Lucky squares tab -->
+    <div id="sp-tab-lucky" class="tab-panel">
+      <h3 style="margin-bottom:0.75rem;">幸运格子 <span style="color:var(--lucky);">⭐</span></h3>
+      <p class="text-muted" style="font-size:0.85rem;margin-bottom:0.75rem;">玩家踩到幸运格时触发庆祝动画并记录。</p>
+      <div style="display:flex;gap:0.5rem;margin-bottom:0.75rem;">
+        <input id="inp-lucky-num" class="input" type="number" placeholder="输入格子编号" min="1" style="max-width:200px;">
+        <button id="btn-add-lucky" class="btn btn-primary btn-sm">添加</button>
       </div>
+      <div id="lucky-tags" class="lucky-squares-display"></div>
+      <button id="btn-save-lucky" class="btn btn-success btn-sm mt-4">保存幸运格</button>
     </div>
 
     <!-- Settings tab -->
-    <div id="setup-tab-settings" class="tab-panel">
-      <div class="card">
-        <div class="card-title">修改房间设置</div>
-        <div id="settings-msg" style="display:none"></div>
-        <div class="form-group">
-          <label>棋盘格子数（10-100）</label>
-          <input id="s-board" type="number" min="10" max="100">
+    <div id="sp-tab-settings" class="tab-panel">
+      <h3 style="margin-bottom:0.75rem;">游戏设置</h3>
+      <div class="form-group">
+        <label>棋盘格数（10-200）</label>
+        <input id="set-board-size" class="input" type="number" min="10" max="200">
+      </div>
+      <div class="form-group">
+        <label>答题时间（秒）</label>
+        <input id="set-time-limit" class="input" type="number" min="5" max="300">
+      </div>
+      <button id="btn-save-settings" class="btn btn-primary btn-sm">保存设置</button>
+    </div>
+
+    <!-- Players tab -->
+    <div id="sp-tab-players" class="tab-panel">
+      <h3 style="margin-bottom:0.75rem;">已加入玩家</h3>
+      <div id="setup-player-list"></div>
+      <p id="sp-no-players" class="text-muted text-center" style="padding:1rem;">暂无玩家加入</p>
+    </div>
+  </div>
+</div>
+
+<!-- ── PLAYING VIEW ────────────────────────────────────────────────────────── -->
+<div id="view-playing" class="view">
+  <nav class="admin-nav">
+    <div class="admin-nav-brand">🎲 游戏进行中</div>
+    <div id="playing-room-info" class="admin-nav-info"></div>
+    <div style="display:flex;gap:0.5rem;align-items:center;">
+      <span id="playing-round" class="badge badge-info">第 0 题</span>
+      <button id="btn-next-q" class="btn btn-primary btn-sm" disabled>下一题</button>
+      <button id="btn-end-game" class="btn btn-danger btn-sm">结束游戏</button>
+    </div>
+  </nav>
+
+  <div class="playing-layout">
+    <div class="playing-board-area">
+      <div class="board-container">
+        <div id="admin-board"></div>
+      </div>
+
+      <!-- Current question display -->
+      <div id="admin-q-card" class="card hidden">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.5rem;">
+          <span id="admin-q-round" class="question-round"></span>
+          <span id="admin-countdown-display" class="badge badge-warning"></span>
         </div>
-        <div class="form-group">
-          <label>每题答题时限（秒）</label>
-          <input id="s-time" type="number" min="5" max="120">
+        <div id="admin-q-text" style="font-weight:600;margin-bottom:0.5rem;"></div>
+        <div id="admin-q-options" style="font-size:0.85rem;color:var(--text-muted);"></div>
+        <div id="admin-q-answer" style="font-size:0.85rem;color:var(--success);margin-top:0.35rem;font-weight:600;"></div>
+      </div>
+
+      <div id="no-questions-alert" class="card hidden" style="text-align:center;border-color:var(--danger);">
+        <p style="color:var(--danger);font-weight:700;">⚠️ 题库已用完</p>
+        <p class="text-muted" style="font-size:0.85rem;">请结束游戏或返回设置添加更多题目</p>
+      </div>
+    </div>
+
+    <div class="playing-sidebar">
+      <!-- Round results -->
+      <div class="round-results" id="round-results-card">
+        <div style="font-size:0.8rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:var(--text-muted);margin-bottom:0.5rem;">本轮结果</div>
+        <div id="round-results-list">
+          <p class="text-muted" style="text-align:center;padding:0.5rem;font-size:0.85rem;">等待第一题…</p>
         </div>
-        <div class="form-group">
-          <label>几人到达终点后提示可结束</label>
-          <input id="s-min" type="number" min="1" max="100">
-        </div>
-        <button class="btn btn-primary" onclick="doSaveSettings()">保存设置</button>
+      </div>
+
+      <!-- Scoreboard -->
+      <div class="scoreboard-card">
+        <div class="scoreboard-title">📊 实时排行</div>
+        <div id="admin-scoreboard"></div>
       </div>
     </div>
   </div>
 </div>
 
-<!-- ── Monitor (playing) ──────────────────────────────────────────────────── -->
-<div id="view-monitor" class="view">
-  <div class="admin-header">
-    <div>
-      <div class="header-title">游戏进行中</div>
-      <div class="header-sub" id="monitor-info"></div>
+<!-- ── ADMIN GAME OVER ─────────────────────────────────────────────────────── -->
+<div id="view-admin-gameover" class="view">
+  <div class="admin-gameover-inner">
+    <div class="gameover-title">🏆 游戏结束!</div>
+    <div id="admin-final-leaderboard" class="leaderboard-list"></div>
+    <div id="admin-lucky-section" class="lucky-section hidden">
+      <h3>⭐ 幸运玩家</h3>
+      <div id="admin-lucky-list"></div>
     </div>
-    <div class="header-right">
-      <div class="room-id-badge" id="monitor-room-badge"></div>
-      <button class="btn btn-danger" id="btn-end" onclick="doEndGame()">结束游戏</button>
-    </div>
-  </div>
-
-  <div class="container" style="padding-top:20px">
-    <div id="can-end-alert" class="alert alert-info" style="display:none"></div>
-
-    <div class="card mb-8">
-      <div class="flex items-center justify-between mb-8">
-        <div class="card-title" style="margin-bottom:0">玩家进度</div>
-        <span class="text-muted text-sm" id="monitor-round">第 0 题</span>
-      </div>
-      <div id="player-monitor-list"></div>
-    </div>
-
-    <div class="card">
-      <div class="card-title">当前排行（实时）</div>
-      <div id="monitor-leaderboard" class="leaderboard"></div>
-    </div>
+    <button id="btn-new-game" class="btn btn-primary mt-4">新建游戏</button>
   </div>
 </div>
 
-<!-- ── Game Ended ─────────────────────────────────────────────────────────── -->
-<div id="view-ended" class="view center">
-  <div style="width:100%;max-width:480px">
-    <div class="text-center mb-8">
-      <div style="font-size:2.5rem">🏆</div>
-      <div class="logo">游戏结束</div>
-    </div>
-    <div id="admin-final-lb" class="leaderboard"></div>
-    <button class="btn btn-ghost btn-full mt-16" onclick="location.reload()">创建新房间</button>
-  </div>
-</div>
+<!-- ── Toast ──────────────────────────────────────────────────────────────── -->
+<div id="toast-container"></div>
 
 <script src="/socket.io/socket.io.js"></script>
+<script src="board.js"></script>
 <script src="admin.js"></script>
 </body>
 </html>

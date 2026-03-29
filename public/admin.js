@@ -1,108 +1,118 @@
+// Admin client logic
 const socket = io();
-
-const COLORS = ['#e74c3c','#3498db','#2ecc71','#f39c12','#9b59b6','#1abc9c','#e67e22','#e91e63','#00bcd4','#ff5722'];
 
 const admin = {
   roomId: null,
   password: null,
-  settings: {},
-  questions: [],
-  surpriseSquares: [],
-  gameState: null,
+  gameState: 'waiting',
   players: {},
+  questions: [],
+  luckySquares: [],
   boardSize: 30,
+  timeLimit: 30,
   roundNumber: 0,
+  pendingLucky: [],
+  countdownInterval: null,
+  currentQuestionData: null,
 };
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
-function showView(id) {
-  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
-  document.getElementById(id).classList.add('active');
-}
-
-function playerColor(id) {
-  let h = 0;
-  for (const c of id) h = (h * 31 + c.charCodeAt(0)) & 0xffff;
-  return COLORS[h % COLORS.length];
-}
-
-function initials(id) { return id.slice(0, 2).toUpperCase(); }
-
-function rankMedal(rank) {
-  return rank === 1 ? '🥇' : rank === 2 ? '🥈' : rank === 3 ? '🥉' : `#${rank}`;
-}
-
-function showAlert(elId, msg, type = 'error') {
-  const el = document.getElementById(elId);
-  el.className = `alert alert-${type}`;
+// ── Toast ─────────────────────────────────────────────────────────────────────
+function toast(msg, type = 'info') {
+  const c = document.getElementById('toast-container');
+  const el = document.createElement('div');
+  el.className = `toast toast-${type}`;
   el.textContent = msg;
-  el.style.display = 'block';
-  if (type !== 'error') setTimeout(() => el.style.display = 'none', 3000);
+  c.appendChild(el);
+  setTimeout(() => {
+    el.classList.add('removing');
+    setTimeout(() => el.remove(), 350);
+  }, 3500);
 }
 
-function hideAlert(elId) {
-  document.getElementById(elId).style.display = 'none';
+// ── Views ─────────────────────────────────────────────────────────────────────
+const views = ['view-home', 'view-setup', 'view-playing', 'view-admin-gameover'];
+function showView(id) {
+  views.forEach(v => {
+    const el = document.getElementById(v);
+    if (el) el.classList.remove('active');
+  });
+  const target = document.getElementById(id);
+  if (target) target.classList.add('active');
 }
 
-// ── Tab switching ─────────────────────────────────────────────────────────────
-
-function switchHomeTab(name, btn) {
-  document.querySelectorAll('#view-home .tab-btn').forEach(b => b.classList.remove('active'));
-  btn.classList.add('active');
-  document.getElementById('home-tab-create').classList.toggle('active', name === 'create');
-  document.getElementById('home-tab-login').classList.toggle('active', name === 'login');
-}
-
-function switchSetupTab(name, btn) {
-  document.querySelectorAll('#view-setup .tab-btn').forEach(b => b.classList.remove('active'));
-  btn.classList.add('active');
-  ['questions','surprise','settings'].forEach(t => {
-    document.getElementById(`setup-tab-${t}`).classList.toggle('active', t === name);
+// ── Tabs ──────────────────────────────────────────────────────────────────────
+function initTabs(tabsId) {
+  const tabsEl = document.getElementById(tabsId);
+  if (!tabsEl) return;
+  tabsEl.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const panelId = btn.dataset.tab;
+      tabsEl.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      // Hide all panels in this tab group
+      const allPanels = document.querySelectorAll(`#${panelId}`);
+      // Find sibling panels by checking btn siblings
+      tabsEl.querySelectorAll('.tab-btn').forEach(b => {
+        const p = document.getElementById(b.dataset.tab);
+        if (p) p.classList.remove('active');
+      });
+      const panel = document.getElementById(panelId);
+      if (panel) panel.classList.add('active');
+    });
   });
 }
 
-// ── Create room ───────────────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  initTabs('home-tabs');
+  initTabs('setup-tabs');
+});
 
-async function doCreate() {
-  const password = document.getElementById('c-password').value.trim();
-  const boardSize = document.getElementById('c-board').value;
-  const timeLimit = document.getElementById('c-time').value;
-  const minPlayersToEnd = document.getElementById('c-min').value;
+// ── HOME: Create room ─────────────────────────────────────────────────────────
+document.getElementById('btn-create').addEventListener('click', async () => {
+  const password = document.getElementById('cr-password').value.trim();
+  const boardSize = document.getElementById('cr-board-size').value;
+  const timeLimit = document.getElementById('cr-time-limit').value;
+  const luckyRaw = document.getElementById('cr-lucky').value.trim();
+  const errEl = document.getElementById('home-error');
+  errEl.classList.add('hidden');
 
-  hideAlert('create-error');
-  if (!password) return showAlert('create-error', '请设置管理员密码');
+  if (!password) { errEl.textContent = '请设置管理员密码'; errEl.classList.remove('hidden'); return; }
+
+  const luckySquares = luckyRaw
+    ? luckyRaw.split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n) && n > 0)
+    : [];
 
   try {
     const res = await fetch('/api/rooms', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ adminPassword: password, boardSize, timeLimit, minPlayersToEnd }),
+      body: JSON.stringify({ adminPassword: password, boardSize, timeLimit, luckySquares }),
     });
     const data = await res.json();
-    if (!res.ok) return showAlert('create-error', data.error || '创建失败');
+    if (!res.ok) { errEl.textContent = data.error; errEl.classList.remove('hidden'); return; }
 
     admin.roomId = data.roomId;
     admin.password = password;
-    admin.settings = { boardSize: parseInt(boardSize), timeLimit: parseInt(timeLimit), minPlayersToEnd: parseInt(minPlayersToEnd) };
-    admin.questions = [];
-    admin.surpriseSquares = [];
+    admin.boardSize = parseInt(boardSize);
+    admin.timeLimit = parseInt(timeLimit);
+    admin.luckySquares = luckySquares;
+    admin.pendingLucky = [...luckySquares];
 
-    enterSetup();
+    connectAdminSocket();
   } catch (e) {
-    showAlert('create-error', '网络错误，请重试');
+    errEl.textContent = '网络错误: ' + e.message;
+    errEl.classList.remove('hidden');
   }
-}
+});
 
-// ── Login to existing room ────────────────────────────────────────────────────
+// ── HOME: Login ───────────────────────────────────────────────────────────────
+document.getElementById('btn-login').addEventListener('click', async () => {
+  const roomId = document.getElementById('lg-room').value.trim().toUpperCase();
+  const password = document.getElementById('lg-password').value.trim();
+  const errEl = document.getElementById('home-error');
+  errEl.classList.add('hidden');
 
-async function doLogin() {
-  const roomId = document.getElementById('l-room').value.trim().toUpperCase();
-  const password = document.getElementById('l-password').value.trim();
-
-  hideAlert('login-error');
-  if (!roomId) return showAlert('login-error', '请输入房间号');
-  if (!password) return showAlert('login-error', '请输入密码');
+  if (!roomId || !password) { errEl.textContent = '请填写房间ID和密码'; errEl.classList.remove('hidden'); return; }
 
   try {
     const res = await fetch(`/api/rooms/${roomId}/verify`, {
@@ -111,88 +121,255 @@ async function doLogin() {
       body: JSON.stringify({ password }),
     });
     const data = await res.json();
-    if (!res.ok) return showAlert('login-error', data.error || '验证失败');
+    if (!res.ok) { errEl.textContent = data.error; errEl.classList.remove('hidden'); return; }
 
     admin.roomId = roomId;
     admin.password = password;
-    admin.settings = data.settings;
-    admin.questions = data.questions;
-    admin.surpriseSquares = data.surpriseSquares;
-    admin.gameState = data.gameState;
+    admin.questions = data.questions || [];
+    admin.luckySquares = data.luckySquares || [];
+    admin.pendingLucky = [...admin.luckySquares];
+    admin.boardSize = data.settings.boardSize;
+    admin.timeLimit = data.settings.timeLimit;
 
-    if (data.gameState === 'playing' || data.gameState === 'ended') {
-      enterMonitor();
-      socket.emit('admin:join', { roomId, password });
-    } else {
-      enterSetup();
-    }
+    connectAdminSocket();
   } catch (e) {
-    showAlert('login-error', '网络错误，请重试');
+    errEl.textContent = '网络错误: ' + e.message;
+    errEl.classList.remove('hidden');
   }
-}
+});
 
-// ── Enter setup view ──────────────────────────────────────────────────────────
-
-function enterSetup() {
-  document.getElementById('setup-room-badge').textContent = admin.roomId;
-  document.getElementById('setup-room-info').textContent =
-    `棋盘 ${admin.settings.boardSize} 格 · 每题 ${admin.settings.timeLimit}s`;
-
-  // Pre-fill settings tab
-  document.getElementById('s-board').value = admin.settings.boardSize;
-  document.getElementById('s-time').value = admin.settings.timeLimit;
-  document.getElementById('s-min').value = admin.settings.minPlayersToEnd;
-
-  renderQuestionList();
-  renderSurpriseList();
-  showView('view-setup');
-
-  // Join socket room for live player updates
+function connectAdminSocket() {
   socket.emit('admin:join', { roomId: admin.roomId, password: admin.password });
 }
 
-// ── Enter monitor view ────────────────────────────────────────────────────────
+// ── Socket events ─────────────────────────────────────────────────────────────
+socket.on('error', (msg) => {
+  toast('错误: ' + msg, 'error');
+  document.getElementById('home-error').textContent = msg;
+  document.getElementById('home-error').classList.remove('hidden');
+});
 
-function enterMonitor() {
-  document.getElementById('monitor-room-badge').textContent = admin.roomId;
-  showView('view-monitor');
+socket.on('admin:joined', (state) => {
+  applyState(state);
+  if (state.gameState === 'waiting') {
+    showView('view-setup');
+    renderSetup();
+  } else if (state.gameState === 'ended') {
+    showView('view-playing');
+    renderPlaying();
+  } else {
+    showView('view-playing');
+    renderPlaying();
+  }
+  toast('已连接到房间 ' + admin.roomId, 'success');
+});
+
+socket.on('admin:state-update', (state) => {
+  applyState(state);
+  const v = currentView();
+  if (v === 'view-setup') {
+    updateSetupPlayerCount();
+    renderSetupPlayerList();
+  } else if (v === 'view-playing') {
+    renderAdminBoard();
+    renderAdminScoreboard();
+    updatePlayingRoomInfo();
+  }
+});
+
+socket.on('game:started', (state) => {
+  applyState(state);
+  showView('view-playing');
+  renderPlaying();
+  toast('🎮 游戏已开始', 'success');
+  document.getElementById('btn-next-q').disabled = false;
+});
+
+socket.on('game:question', ({ question, timeLimit, roundNumber }) => {
+  admin.roundNumber = roundNumber;
+  admin.currentQuestionData = question;
+  document.getElementById('playing-round').textContent = `第 ${roundNumber} 题`;
+  document.getElementById('btn-next-q').disabled = true;
+  showAdminQuestion(question, timeLimit);
+  startAdminCountdown(timeLimit);
+});
+
+socket.on('game:resolved', (data) => {
+  applyState(data.state);
+  stopAdminCountdown();
+  document.getElementById('btn-next-q').disabled = false;
+  document.getElementById('admin-q-card').classList.remove('hidden');
+  // Show correct answer
+  const labels = ['A', 'B', 'C', 'D'];
+  const correctLabels = data.correctIndices.map(i => labels[i]).join(', ');
+  document.getElementById('admin-q-answer').textContent =
+    `✅ 正确答案: ${correctLabels} — ${data.correctAnswers.join(' / ')}`;
+
+  renderRoundResults(data);
+  renderAdminBoard();
+  renderAdminScoreboard();
+
+  if (data.unusedLeft === 0) {
+    document.getElementById('no-questions-alert').classList.remove('hidden');
+    document.getElementById('btn-next-q').disabled = true;
+    toast('⚠️ 题库已用完', 'error');
+  }
+});
+
+socket.on('admin:no-questions', ({ message }) => {
+  toast(message, 'error');
+  document.getElementById('no-questions-alert').classList.remove('hidden');
+  document.getElementById('btn-next-q').disabled = true;
+});
+
+socket.on('game:ended', (data) => {
+  stopAdminCountdown();
+  showView('view-admin-gameover');
+  renderAdminGameOver(data);
+});
+
+// ── State application ─────────────────────────────────────────────────────────
+function applyState(state) {
+  admin.players = state.players || admin.players;
+  admin.luckySquares = state.luckySquares || admin.luckySquares;
+  admin.boardSize = state.settings?.boardSize || admin.boardSize;
+  admin.timeLimit = state.settings?.timeLimit || admin.timeLimit;
+  admin.gameState = state.gameState || admin.gameState;
+  admin.roundNumber = state.roundNumber || admin.roundNumber;
 }
 
-// ── Add question ──────────────────────────────────────────────────────────────
+function currentView() {
+  for (const v of views) {
+    const el = document.getElementById(v);
+    if (el && el.classList.contains('active')) return v;
+  }
+  return null;
+}
 
-async function doAddQuestion() {
-  const text = document.getElementById('q-text-input').value.trim();
-  const opts = [...document.querySelectorAll('.q-opt')].map(i => i.value.trim()).filter(Boolean);
-  const correctIndex = document.getElementById('q-correct').value;
+// ── SETUP VIEW ────────────────────────────────────────────────────────────────
+function renderSetup() {
+  document.getElementById('setup-room-info').textContent = `房间: ${admin.roomId}`;
+  document.getElementById('set-board-size').value = admin.boardSize;
+  document.getElementById('set-time-limit').value = admin.timeLimit;
+  updateSetupPlayerCount();
+  renderQuestionsList();
+  renderLuckyTags();
+  renderSetupPlayerList();
+}
 
-  hideAlert('add-q-error');
-  if (!text) return showAlert('add-q-error', '请输入题目内容');
-  if (opts.length < 2) return showAlert('add-q-error', '至少需要2个选项');
+function updateSetupPlayerCount() {
+  const count = Object.keys(admin.players).length;
+  document.getElementById('setup-player-count').textContent = `${count} 玩家`;
+}
+
+function renderSetupPlayerList() {
+  const list = document.getElementById('setup-player-list');
+  const noPlayers = document.getElementById('sp-no-players');
+  const players = Object.values(admin.players);
+  if (players.length === 0) {
+    noPlayers.classList.remove('hidden');
+    list.innerHTML = '';
+    return;
+  }
+  noPlayers.classList.add('hidden');
+  list.innerHTML = players.map(p => `
+    <div class="score-row" style="margin-bottom:0.3rem;">
+      <div class="token" style="background:${Board.playerColor(p.id)};">${Board.initials(p.id)}</div>
+      <div class="score-name">${p.id}</div>
+      <span class="badge ${p.connected ? 'badge-success' : 'badge-danger'}">${p.connected ? '在线' : '离线'}</span>
+    </div>
+  `).join('');
+}
+
+function renderQuestionsList() {
+  const list = document.getElementById('questions-list');
+  const empty = document.getElementById('q-empty');
+  const badge = document.getElementById('q-count-badge');
+  badge.textContent = `${admin.questions.length} 题`;
+  if (admin.questions.length === 0) {
+    empty.classList.remove('hidden');
+    list.innerHTML = '';
+    return;
+  }
+  empty.classList.add('hidden');
+  const labels = ['A', 'B', 'C', 'D'];
+  list.innerHTML = admin.questions.map((q, i) => {
+    const correctLabels = q.correctIndices.map(ci => labels[ci]).join(', ');
+    return `<div class="question-item">
+      <div class="question-num">${i + 1}</div>
+      <div class="question-item-body">
+        <div class="question-item-text">${escHtml(q.text)}</div>
+        <div class="question-item-options">${q.options.map((o, oi) => `${labels[oi]}. ${escHtml(o)}`).join(' | ')}</div>
+        <div class="question-item-correct">✅ 正确: ${correctLabels}</div>
+      </div>
+      <button class="btn btn-danger btn-icon btn-sm" onclick="deleteQuestion('${q.id}')">✕</button>
+    </div>`;
+  }).join('');
+}
+
+// ── Add question form ─────────────────────────────────────────────────────────
+document.getElementById('btn-add-q-modal').addEventListener('click', () => {
+  const form = document.getElementById('add-q-form');
+  form.classList.toggle('hidden');
+});
+
+document.getElementById('btn-cancel-q').addEventListener('click', () => {
+  document.getElementById('add-q-form').classList.add('hidden');
+  clearAddQForm();
+});
+
+document.getElementById('btn-save-q').addEventListener('click', async () => {
+  const text = document.getElementById('nq-text').value.trim();
+  const opts = [
+    document.getElementById('nq-a').value.trim(),
+    document.getElementById('nq-b').value.trim(),
+    document.getElementById('nq-c').value.trim(),
+    document.getElementById('nq-d').value.trim(),
+  ];
+  const correctIndices = ['nq-ca', 'nq-cb', 'nq-cc', 'nq-cd']
+    .map((id, i) => document.getElementById(id).checked ? i : -1)
+    .filter(i => i >= 0);
+
+  if (!text) { toast('请输入题目内容', 'error'); return; }
+  const filledOpts = opts.filter(o => o !== '');
+  if (filledOpts.length < 2) { toast('至少需要2个选项', 'error'); return; }
+  if (correctIndices.length === 0) { toast('请选择至少一个正确答案', 'error'); return; }
+  // Validate correct indices are within filled opts
+  const filteredCorrect = correctIndices.filter(ci => opts[ci] !== '');
+  if (filteredCorrect.length === 0) { toast('正确答案对应的选项不能为空', 'error'); return; }
+
+  const options = opts.slice(0, filledOpts.length === 4 ? 4 : (opts[2] ? (opts[3] ? 4 : 3) : 2));
+  const finalOpts = [];
+  for (let i = 0; i < options.length; i++) {
+    if (opts[i]) finalOpts.push(opts[i]);
+    else break;
+  }
 
   try {
     const res = await fetch(`/api/rooms/${admin.roomId}/questions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ adminPassword: admin.password, text, options: opts, correctIndex }),
+      body: JSON.stringify({ adminPassword: admin.password, text, options: finalOpts, correctIndices: filteredCorrect }),
     });
     const data = await res.json();
-    if (!res.ok) return showAlert('add-q-error', data.error || '添加失败');
-
+    if (!res.ok) { toast(data.error, 'error'); return; }
     admin.questions = data.questions;
-
-    // Clear form
-    document.getElementById('q-text-input').value = '';
-    document.querySelectorAll('.q-opt').forEach(i => i.value = '');
-    document.getElementById('q-correct').value = '0';
-
-    showAlert('add-q-success', `添加成功！当前题库共 ${admin.questions.length} 题`, 'success');
-    renderQuestionList();
+    renderQuestionsList();
+    clearAddQForm();
+    document.getElementById('add-q-form').classList.add('hidden');
+    toast('题目已添加', 'success');
   } catch (e) {
-    showAlert('add-q-error', '网络错误');
+    toast('保存失败: ' + e.message, 'error');
   }
+});
+
+function clearAddQForm() {
+  ['nq-text', 'nq-a', 'nq-b', 'nq-c', 'nq-d'].forEach(id => { document.getElementById(id).value = ''; });
+  ['nq-ca', 'nq-cb', 'nq-cc', 'nq-cd'].forEach(id => { document.getElementById(id).checked = false; });
 }
 
-async function doDeleteQuestion(qid) {
+async function deleteQuestion(qid) {
+  if (!confirm('确认删除该题目?')) return;
   try {
     const res = await fetch(`/api/rooms/${admin.roomId}/questions/${qid}`, {
       method: 'DELETE',
@@ -200,250 +377,234 @@ async function doDeleteQuestion(qid) {
       body: JSON.stringify({ adminPassword: admin.password }),
     });
     const data = await res.json();
-    if (!res.ok) return alert(data.error || '删除失败');
+    if (!res.ok) { toast(data.error, 'error'); return; }
     admin.questions = data.questions;
-    renderQuestionList();
+    renderQuestionsList();
+    toast('题目已删除', 'success');
   } catch (e) {
-    alert('网络错误');
+    toast('删除失败: ' + e.message, 'error');
   }
 }
 
-function renderQuestionList() {
-  const labels = ['A','B','C','D'];
-  const el = document.getElementById('question-list');
-  document.getElementById('q-count').textContent = `(${admin.questions.length} 题)`;
+// ── File import ───────────────────────────────────────────────────────────────
+document.getElementById('inp-import-file').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('adminPassword', admin.password);
 
-  if (admin.questions.length === 0) {
-    el.innerHTML = '<div class="text-muted text-sm">暂无题目，请先添加</div>';
-    return;
-  }
-
-  el.innerHTML = admin.questions.map((q, i) => {
-    const opts = q.options.map((o, j) =>
-      `<span class="${j === q.correctIndex ? 'correct' : ''}">${labels[j]}.${o}</span>`
-    ).join('  ');
-    return `<div class="q-item">
-      <div class="q-item-body">
-        <div class="q-item-text">${i + 1}. ${q.text}</div>
-        <div class="q-item-opts">${opts}</div>
-      </div>
-      <button class="btn btn-danger btn-sm" onclick="doDeleteQuestion('${q.id}')">删除</button>
-    </div>`;
-  }).join('');
-}
-
-// ── Surprise squares ──────────────────────────────────────────────────────────
-
-async function doAddSurprise() {
-  const val = parseInt(document.getElementById('surprise-inp').value);
-  hideAlert('surprise-error');
-
-  if (isNaN(val) || val < 1 || val >= admin.settings.boardSize) {
-    return showAlert('surprise-error', `格子编号须在 1 到 ${admin.settings.boardSize - 1} 之间`);
-  }
-  if (admin.surpriseSquares.includes(val)) {
-    return showAlert('surprise-error', '该格子已是惊喜格');
-  }
-
-  const newSquares = [...admin.surpriseSquares, val].sort((a, b) => a - b);
-  await saveSurprises(newSquares);
-  document.getElementById('surprise-inp').value = '';
-}
-
-async function doRemoveSurprise(n) {
-  const newSquares = admin.surpriseSquares.filter(s => s !== n);
-  await saveSurprises(newSquares);
-}
-
-async function saveSurprises(squares) {
+  toast('正在导入文件…', 'info');
   try {
-    const res = await fetch(`/api/rooms/${admin.roomId}/surprise-squares`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ adminPassword: admin.password, squares }),
+    const res = await fetch(`/api/rooms/${admin.roomId}/import`, {
+      method: 'POST',
+      body: formData,
     });
     const data = await res.json();
-    if (!res.ok) return showAlert('surprise-error', data.error || '保存失败');
-    admin.surpriseSquares = data.surpriseSquares;
-    renderSurpriseList();
-  } catch (e) {
-    showAlert('surprise-error', '网络错误');
+    if (!res.ok) { toast(data.error, 'error'); return; }
+    admin.questions = data.questions;
+    renderQuestionsList();
+    toast(`成功导入 ${data.imported} 道题目`, 'success');
+  } catch (err) {
+    toast('导入失败: ' + err.message, 'error');
   }
-}
+  e.target.value = '';
+});
 
-function renderSurpriseList() {
-  const el = document.getElementById('surprise-list');
-  if (admin.surpriseSquares.length === 0) {
-    el.innerHTML = '<span class="text-muted text-sm">暂无惊喜格</span>';
-    return;
-  }
-  el.innerHTML = admin.surpriseSquares.map(n =>
-    `<div class="surprise-sq" onclick="doRemoveSurprise(${n})">⭐ 第${n}格 ×</div>`
+// ── Lucky squares ─────────────────────────────────────────────────────────────
+function renderLuckyTags() {
+  const container = document.getElementById('lucky-tags');
+  container.innerHTML = admin.pendingLucky.map(n =>
+    `<div class="lucky-tag">${n} <button onclick="removeLucky(${n})">✕</button></div>`
   ).join('');
 }
 
+document.getElementById('btn-add-lucky').addEventListener('click', () => {
+  const val = parseInt(document.getElementById('inp-lucky-num').value);
+  if (isNaN(val) || val <= 0) { toast('请输入有效的格子编号', 'error'); return; }
+  if (admin.pendingLucky.includes(val)) { toast('该格子已存在', 'error'); return; }
+  admin.pendingLucky.push(val);
+  admin.pendingLucky.sort((a, b) => a - b);
+  renderLuckyTags();
+  document.getElementById('inp-lucky-num').value = '';
+});
+
+window.removeLucky = function(n) {
+  admin.pendingLucky = admin.pendingLucky.filter(x => x !== n);
+  renderLuckyTags();
+};
+
+document.getElementById('btn-save-lucky').addEventListener('click', async () => {
+  try {
+    const res = await fetch(`/api/rooms/${admin.roomId}/lucky-squares`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ adminPassword: admin.password, squares: admin.pendingLucky }),
+    });
+    const data = await res.json();
+    if (!res.ok) { toast(data.error, 'error'); return; }
+    admin.luckySquares = data.luckySquares;
+    toast('幸运格已保存', 'success');
+  } catch (e) {
+    toast('保存失败: ' + e.message, 'error');
+  }
+});
+
 // ── Settings ──────────────────────────────────────────────────────────────────
-
-async function doSaveSettings() {
-  const boardSize = document.getElementById('s-board').value;
-  const timeLimit = document.getElementById('s-time').value;
-  const minPlayersToEnd = document.getElementById('s-min').value;
-
+document.getElementById('btn-save-settings').addEventListener('click', async () => {
+  const boardSize = document.getElementById('set-board-size').value;
+  const timeLimit = document.getElementById('set-time-limit').value;
   try {
     const res = await fetch(`/api/rooms/${admin.roomId}/settings`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ adminPassword: admin.password, boardSize, timeLimit, minPlayersToEnd }),
+      body: JSON.stringify({ adminPassword: admin.password, boardSize, timeLimit }),
     });
     const data = await res.json();
-    if (!res.ok) return showAlert('settings-msg', data.error || '保存失败');
-    admin.settings = data.settings;
-    document.getElementById('setup-room-info').textContent =
-      `棋盘 ${admin.settings.boardSize} 格 · 每题 ${admin.settings.timeLimit}s`;
-    showAlert('settings-msg', '设置已保存', 'success');
+    if (!res.ok) { toast(data.error, 'error'); return; }
+    admin.boardSize = data.settings.boardSize;
+    admin.timeLimit = data.settings.timeLimit;
+    toast('设置已保存', 'success');
   } catch (e) {
-    showAlert('settings-msg', '网络错误');
+    toast('保存失败: ' + e.message, 'error');
+  }
+});
+
+// ── Start game ────────────────────────────────────────────────────────────────
+document.getElementById('btn-start-game').addEventListener('click', () => {
+  if (admin.questions.length === 0) { toast('请先添加题目', 'error'); return; }
+  if (Object.keys(admin.players).length === 0) { toast('没有玩家加入', 'error'); return; }
+  if (!confirm('确认开始游戏?')) return;
+  socket.emit('admin:start-game');
+});
+
+// ── PLAYING VIEW ──────────────────────────────────────────────────────────────
+function renderPlaying() {
+  updatePlayingRoomInfo();
+  renderAdminBoard();
+  renderAdminScoreboard();
+  document.getElementById('btn-next-q').disabled = (admin.gameState !== 'ready');
+}
+
+function updatePlayingRoomInfo() {
+  document.getElementById('playing-room-info').textContent = `房间: ${admin.roomId} | 玩家: ${Object.keys(admin.players).length}`;
+  document.getElementById('playing-round').textContent = `第 ${admin.roundNumber} 题`;
+}
+
+function renderAdminBoard() {
+  Board.render('admin-board', admin.boardSize, admin.luckySquares, admin.players, null);
+}
+
+function renderAdminScoreboard() {
+  Board.renderMiniScoreboard('admin-scoreboard', admin.players, admin.boardSize, null);
+}
+
+// ── Next question ─────────────────────────────────────────────────────────────
+document.getElementById('btn-next-q').addEventListener('click', () => {
+  document.getElementById('btn-next-q').disabled = true;
+  document.getElementById('admin-q-card').classList.add('hidden');
+  document.getElementById('no-questions-alert').classList.add('hidden');
+  socket.emit('admin:next-question');
+});
+
+function showAdminQuestion(question, timeLimit) {
+  const card = document.getElementById('admin-q-card');
+  card.classList.remove('hidden');
+  const labels = ['A', 'B', 'C', 'D'];
+  document.getElementById('admin-q-round').textContent = `第 ${admin.roundNumber} 题`;
+  document.getElementById('admin-q-text').textContent = question.text;
+  document.getElementById('admin-q-options').innerHTML = question.options
+    .map((o, i) => `<span style="margin-right:0.75rem;">${labels[i]}. ${escHtml(o)}</span>`)
+    .join('');
+  document.getElementById('admin-q-answer').textContent = '';
+  document.getElementById('admin-countdown-display').textContent = `⏱️ ${timeLimit}s`;
+}
+
+function startAdminCountdown(total) {
+  stopAdminCountdown();
+  let left = total;
+  const el = document.getElementById('admin-countdown-display');
+  state_adminLeft = left;
+  admin.countdownInterval = setInterval(() => {
+    left--;
+    if (el) el.textContent = `⏱️ ${left}s`;
+    if (left <= 0) stopAdminCountdown();
+  }, 1000);
+}
+
+function stopAdminCountdown() {
+  if (admin.countdownInterval) {
+    clearInterval(admin.countdownInterval);
+    admin.countdownInterval = null;
   }
 }
 
-// ── Start game ────────────────────────────────────────────────────────────────
+// ── Round results ─────────────────────────────────────────────────────────────
+function renderRoundResults(data) {
+  const list = document.getElementById('round-results-list');
+  const labels = ['A', 'B', 'C', 'D'];
+  const correctLabels = data.correctIndices.map(i => labels[i]).join(', ');
 
-function doStartGame() {
-  if (admin.questions.length === 0) return alert('请先添加题目');
-  const playerCount = Object.keys(admin.players).length;
-  if (playerCount === 0) return alert('还没有玩家加入');
-  if (!confirm(`确认开始游戏？当前有 ${playerCount} 名玩家，题库共 ${admin.questions.length} 题`)) return;
-  socket.emit('admin:start-game');
+  list.innerHTML = `
+    <div style="font-size:0.8rem;color:var(--text-muted);margin-bottom:0.4rem;">
+      正确答案: <b style="color:var(--success);">${correctLabels}</b>
+    </div>` +
+    Object.entries(data.results).map(([uid, r]) => {
+      const icon = !r.answered ? '⏱️' : r.correct ? '✅' : '❌';
+      let detail = '';
+      if (!r.answered) detail = '超时';
+      else if (r.correct) detail = `+${r.dice} → 格${r.newPos}`;
+      else detail = `停留格${r.oldPos}`;
+      return `<div class="result-row">
+        <span class="result-icon">${icon}</span>
+        <div class="token" style="background:${Board.playerColor(uid)};">${Board.initials(uid)}</div>
+        <span class="result-name">${uid}</span>
+        <span class="result-detail">${detail}${r.hitLucky ? ' ⭐' : ''}${r.justFinished ? ' 🏁' : ''}</span>
+      </div>`;
+    }).join('');
 }
 
 // ── End game ──────────────────────────────────────────────────────────────────
-
-function doEndGame() {
-  if (!confirm('确认结束游戏？将显示当前排行榜并结束所有玩家的游戏。')) return;
+document.getElementById('btn-end-game').addEventListener('click', () => {
+  if (!confirm('确认结束游戏?')) return;
   socket.emit('admin:end-game');
-}
+});
 
-// ── Socket events ─────────────────────────────────────────────────────────────
+// ── Game over ─────────────────────────────────────────────────────────────────
+function renderAdminGameOver(data) {
+  const lbEl = document.getElementById('admin-final-leaderboard');
+  const rankEmojis = ['🥇', '🥈', '🥉'];
+  lbEl.innerHTML = data.leaderboard.map((entry, i) => {
+    const rankDisplay = rankEmojis[i] || `#${entry.rank}`;
+    return `<div class="lb-row ${i < 3 ? 'top' + (i + 1) : ''}">
+      <div class="lb-rank">${rankDisplay}</div>
+      <div class="token" style="background:${Board.playerColor(entry.id)};">${Board.initials(entry.id)}</div>
+      <div class="lb-name">${entry.id}</div>
+      <div class="lb-detail">${entry.finished ? '🏁 完赛' : `位置 ${entry.position}`}${entry.luckyCount > 0 ? ` ⭐×${entry.luckyCount}` : ''}</div>
+    </div>`;
+  }).join('');
 
-socket.on('admin:joined', (state) => {
-  applyState(state);
-  if (state.gameState === 'playing') {
-    enterMonitor();
-    renderMonitor();
+  if (data.luckyPlayers && data.luckyPlayers.length > 0) {
+    document.getElementById('admin-lucky-section').classList.remove('hidden');
+    document.getElementById('admin-lucky-list').innerHTML = data.luckyPlayers.map(p =>
+      `<div class="lb-row">
+        <div class="token" style="background:${Board.playerColor(p.id)};">${Board.initials(p.id)}</div>
+        <div class="lb-name">${p.id}</div>
+        <div class="lb-detail">⭐ 幸运格 ×${p.luckyCount}</div>
+      </div>`
+    ).join('');
   }
-});
-
-socket.on('admin:state-update', (state) => {
-  applyState(state);
-  if (state.gameState === 'waiting') {
-    renderSetupPlayerCount(state);
-  } else if (state.gameState === 'playing') {
-    renderMonitor();
-  }
-});
-
-socket.on('game:started', (state) => {
-  applyState(state);
-  enterMonitor();
-  renderMonitor();
-});
-
-socket.on('game:question', ({ roundNumber }) => {
-  admin.roundNumber = roundNumber;
-  document.getElementById('monitor-round').textContent = `第 ${roundNumber} 题`;
-});
-
-socket.on('game:round-result', ({ state }) => {
-  applyState(state);
-  renderMonitor();
-});
-
-socket.on('admin:can-end', ({ finishedCount }) => {
-  const el = document.getElementById('can-end-alert');
-  el.textContent = `🎉 已有 ${finishedCount} 名玩家到达终点，达到结束条件，可点击"结束游戏"`;
-  el.style.display = 'block';
-});
-
-socket.on('game:ended', ({ leaderboard }) => {
-  renderAdminLeaderboard(leaderboard);
-  showView('view-ended');
-});
-
-socket.on('error', (msg) => {
-  alert('错误：' + msg);
-});
-
-// ── State ─────────────────────────────────────────────────────────────────────
-
-function applyState(state) {
-  admin.gameState = state.gameState;
-  admin.players = state.players;
-  admin.boardSize = state.settings.boardSize;
-  admin.roundNumber = state.roundNumber;
 }
 
-function renderSetupPlayerCount(state) {
-  const count = Object.keys(state.players).length;
-  const btn = document.getElementById('btn-start');
-  btn.textContent = `开始游戏（${count} 人）`;
-}
+document.getElementById('btn-new-game').addEventListener('click', () => {
+  location.reload();
+});
 
-// ── Monitor rendering ─────────────────────────────────────────────────────────
-
-function renderMonitor() {
-  const info = `房间 ${admin.roomId} · 第 ${admin.roundNumber} 题`;
-  document.getElementById('monitor-info').textContent = info;
-
-  const sorted = Object.values(admin.players).sort((a, b) => {
-    if (a.finished && !b.finished) return -1;
-    if (!a.finished && b.finished) return 1;
-    if (a.finished && b.finished) return (a.finishOrder || 0) - (b.finishOrder || 0);
-    return b.position - a.position;
-  });
-
-  // Progress list
-  const listEl = document.getElementById('player-monitor-list');
-  listEl.innerHTML = sorted.map(p => {
-    const pct = Math.round((p.position / admin.boardSize) * 100);
-    const status = p.finished ? '🏁 终点' : `${p.position} / ${admin.boardSize}`;
-    const offline = p.connected ? '' : ' (离线)';
-    return `<div class="player-monitor-row">
-      <span class="mini-token" style="background:${playerColor(p.id)}">${initials(p.id)}</span>
-      <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${p.id}">
-        ${p.id}${offline}
-      </span>
-      <div class="prog-bar" style="width:120px">
-        <div class="prog-fill" style="width:${pct}%"></div>
-      </div>
-      <span class="text-sm text-muted" style="width:70px;text-align:right">${status}</span>
-      ${p.surpriseCount > 0 ? `<span class="text-sm" style="color:var(--success)">⭐×${p.surpriseCount}</span>` : ''}
-    </div>`;
-  }).join('');
-
-  // Mini leaderboard
-  const lbEl = document.getElementById('monitor-leaderboard');
-  lbEl.innerHTML = sorted.map((p, i) => {
-    const rank = i + 1;
-    const rankClass = rank === 1 ? 'gold' : rank === 2 ? 'silver' : rank === 3 ? 'bronze' : '';
-    return `<div class="lb-row">
-      <div class="lb-rank ${rankClass}">${rankMedal(rank)}</div>
-      <span class="player-token" style="background:${playerColor(p.id)};width:24px;height:24px;font-size:0.6rem">${initials(p.id)}</span>
-      <div class="lb-name">${p.id}</div>
-      <div class="lb-pos">${p.finished ? '🏁 终点' : `位置 ${p.position}`}</div>
-      ${p.surpriseCount > 0 ? `<span class="lb-badge surprise">⭐×${p.surpriseCount}</span>` : ''}
-    </div>`;
-  }).join('');
-}
-
-function renderAdminLeaderboard(leaderboard) {
-  document.getElementById('admin-final-lb').innerHTML = leaderboard.map(p => {
-    const rankClass = p.rank === 1 ? 'gold' : p.rank === 2 ? 'silver' : p.rank === 3 ? 'bronze' : '';
-    return `<div class="lb-row">
-      <div class="lb-rank ${rankClass}">${rankMedal(p.rank)}</div>
-      <span class="player-token" style="background:${playerColor(p.id)};width:26px;height:26px;font-size:0.65rem">${initials(p.id)}</span>
-      <div class="lb-name">${p.id}</div>
-      <div class="lb-pos">${p.finished ? '🏁 终点' : `位置 ${p.position}`}</div>
-      ${p.surpriseCount > 0 ? `<span class="lb-badge surprise">⭐×${p.surpriseCount}</span>` : ''}
-    </div>`;
-  }).join('');
+// ── Utility ───────────────────────────────────────────────────────────────────
+function escHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }

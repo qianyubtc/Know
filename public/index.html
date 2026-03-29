@@ -3,147 +3,130 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>答题大冒险</title>
+  <title>Trivia Board Game - Player</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
-<!-- ── Join ───────────────────────────────────────────────────────────────── -->
-<div id="view-join" class="view active center">
-  <div style="width:100%;max-width:380px">
-    <div class="text-center mb-8">
-      <div class="logo">答题<span>冒险</span></div>
-      <div class="text-muted text-sm">加入房间，开始答题闯关</div>
+<!-- ── JOIN VIEW ──────────────────────────────────────────────────────────── -->
+<div id="view-join" class="view active">
+  <div class="join-logo">🎲</div>
+  <div class="join-title">Trivia Board Game</div>
+  <div class="join-sub">多人答题棋盘游戏</div>
+  <div class="card join-card">
+    <div class="form-group">
+      <label for="inp-room">房间 ID</label>
+      <input id="inp-room" class="input" type="text" placeholder="输入房间ID" maxlength="10" style="text-transform:uppercase;">
     </div>
-    <div class="card mt-16">
-      <div id="join-error" class="alert alert-error" style="display:none"></div>
-      <div class="form-group">
-        <label>房间号</label>
-        <input id="inp-room" placeholder="输入6位房间号" maxlength="6" style="text-transform:uppercase;letter-spacing:0.1em;font-size:1.1rem">
-      </div>
-      <div class="form-group">
-        <label>你的ID</label>
-        <input id="inp-player" placeholder="给自己起个ID（2-12字符）" maxlength="12">
-      </div>
-      <div class="form-group">
-        <label>6位密码（下次重连用）</label>
-        <input id="inp-password" type="password" placeholder="设置6位数字密码" maxlength="6" pattern="\d{6}" inputmode="numeric">
-      </div>
-      <button class="btn btn-primary btn-full mt-12" onclick="doJoin()">加入游戏</button>
+    <div class="form-group">
+      <label for="inp-uid">Binance UID</label>
+      <input id="inp-uid" class="input" type="text" placeholder="输入你的Binance UID">
     </div>
-    <div class="text-center mt-12 text-sm text-muted">
-      管理员？<a href="admin.html" style="color:var(--primary);text-decoration:none">点此进入管理后台</a>
+    <div class="form-group">
+      <label for="inp-pw">6位重连密码</label>
+      <input id="inp-pw" class="input" type="password" placeholder="设置6位数字密码" maxlength="6" inputmode="numeric" pattern="[0-9]{6}">
     </div>
+    <button id="btn-join" class="btn btn-primary btn-lg w-full">加入游戏</button>
+    <p id="join-error" class="text-muted mt-2 text-center hidden" style="color:var(--danger);"></p>
   </div>
 </div>
 
-<!-- ── Waiting ─────────────────────────────────────────────────────────────── -->
+<!-- ── WAITING VIEW ────────────────────────────────────────────────────────── -->
 <div id="view-waiting" class="view">
-  <div class="header">
-    <div>
-      <div class="header-title">等待游戏开始</div>
-      <div class="header-sub" id="wait-room-info"></div>
-    </div>
-    <div class="header-right">
-      <span class="pulse text-muted text-sm">等待管理员开始游戏…</span>
-    </div>
-  </div>
-  <div class="container" style="padding-top:24px">
-    <div class="card">
-      <div class="card-title">已加入玩家</div>
-      <div id="wait-player-list" class="player-list"></div>
-    </div>
+  <div class="waiting-inner">
+    <div style="font-size:2.5rem">🎲</div>
+    <h2 style="margin-top:0.5rem">等待游戏开始</h2>
+    <p class="text-muted mt-2" id="wait-room-info">房间 ID: —</p>
+    <div class="waiting-spinner"></div>
+    <p class="text-muted" id="wait-uid-info">你的UID: —</p>
+    <div id="wait-player-list" class="player-list"></div>
+    <p class="text-muted mt-4" style="font-size:0.85rem">等待管理员开始游戏…</p>
   </div>
 </div>
 
-<!-- ── Game ────────────────────────────────────────────────────────────────── -->
+<!-- ── GAME VIEW ───────────────────────────────────────────────────────────── -->
 <div id="view-game" class="view">
-  <div class="header">
-    <div>
-      <div class="header-title" id="game-room-title">答题冒险</div>
-      <div class="header-sub" id="game-round-info">第 1 题</div>
-    </div>
-    <div class="header-right">
-      <span id="my-pos-badge" class="text-sm text-muted"></span>
-    </div>
-  </div>
-
   <div class="game-layout">
-    <!-- Left: board + question -->
-    <div class="game-left">
-      <!-- My finished banner (hidden by default) -->
-      <div id="finished-banner" class="finished-banner" style="display:none">
-        <div class="rank" id="my-rank-num">🏆</div>
-        <div style="font-size:1rem;font-weight:700">你已到达终点！</div>
-        <div class="text-muted text-sm mt-8">等待游戏结束，查看最终排行</div>
+    <div class="game-top" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:0.5rem;">
+      <div style="font-weight:700;font-size:1rem;">🎲 Trivia Board Game
+        <span id="game-room-badge" class="badge badge-info" style="margin-left:0.4rem;"></span>
+      </div>
+      <div id="game-status-bar" class="text-muted" style="font-size:0.85rem;"></div>
+    </div>
+
+    <div class="game-board-area">
+      <!-- Board -->
+      <div class="board-container">
+        <div id="player-board"></div>
       </div>
 
-      <!-- Question -->
-      <div id="question-area" class="question-card mb-8" style="display:none">
-        <div class="question-header">
-          <span class="round-badge" id="q-round-badge">第 1 题</span>
-          <div class="timer-ring">
-            <svg width="48" height="48" viewBox="0 0 48 48">
-              <circle class="timer-bg" cx="24" cy="24" r="20"/>
-              <circle class="timer-fg" id="timer-circle" cx="24" cy="24" r="20"
-                stroke-dasharray="125.66" stroke-dashoffset="0"/>
-            </svg>
-            <div class="timer-text" id="timer-num">30</div>
+      <!-- Question card -->
+      <div class="question-card" id="question-card">
+        <div id="state-idle" style="text-align:center;padding:2rem;color:var(--text-muted);">
+          <div style="font-size:2rem;">⏳</div>
+          <p>等待下一题…</p>
+        </div>
+
+        <div id="state-question" class="hidden">
+          <div class="question-header">
+            <span id="q-round-label" class="question-round">第 — 题</span>
+            <div class="countdown-wrap">
+              <svg class="countdown-svg" width="40" height="40">
+                <circle cx="20" cy="20" r="16" fill="none" stroke="var(--border)" stroke-width="3"/>
+                <circle id="countdown-circle" class="countdown-circle" cx="20" cy="20" r="16"
+                  fill="none" stroke="var(--primary)" stroke-width="3"
+                  stroke-dasharray="100.53" stroke-dashoffset="0" stroke-linecap="round"/>
+              </svg>
+              <span id="countdown-num" class="countdown-num">—</span>
+            </div>
+          </div>
+          <div id="q-text" class="question-text"></div>
+          <div id="q-options" class="options-grid"></div>
+          <div class="submit-area">
+            <button id="btn-submit" class="btn btn-primary">确认答案</button>
+            <div id="answered-badge" class="answered-badge hidden">✅ 已提交</div>
           </div>
         </div>
-        <div class="question-text" id="q-text"></div>
-        <div class="options" id="q-options"></div>
-        <div id="answered-notice" class="answered-notice" style="display:none">
-          ✅ 已提交答案，等待本轮结束…
-        </div>
-      </div>
 
-      <!-- Board -->
-      <div class="card">
-        <div class="card-title" style="margin-bottom:8px">游戏棋盘</div>
-        <div id="start-area" class="start-area"></div>
-        <div class="board-wrap">
-          <div id="board-container" class="board"></div>
+        <div id="state-result" class="hidden">
+          <div id="result-reveal" class="result-reveal"></div>
         </div>
       </div>
     </div>
 
-    <!-- Right: mini scoreboard -->
-    <div class="game-right">
-      <div class="card">
-        <div class="card-title">当前排名</div>
-        <div id="mini-scoreboard" class="mini-board"></div>
+    <div class="game-sidebar">
+      <div class="scoreboard-card">
+        <div class="scoreboard-title">📊 排行榜</div>
+        <div id="mini-scoreboard"></div>
       </div>
     </div>
   </div>
 </div>
 
-<!-- ── Game Over ────────────────────────────────────────────────────────────── -->
-<div id="view-gameover" class="view center">
-  <div style="width:100%;max-width:480px">
-    <div class="text-center mb-8">
-      <div style="font-size:2.5rem">🏆</div>
-      <div class="logo">最终排行榜</div>
+<!-- ── GAME OVER VIEW ──────────────────────────────────────────────────────── -->
+<div id="view-gameover" class="view">
+  <div class="gameover-inner">
+    <div class="gameover-title">🏆 游戏结束!</div>
+    <div id="gameover-leaderboard" class="leaderboard-list"></div>
+    <div id="gameover-lucky" class="lucky-section hidden">
+      <h3>⭐ 幸运玩家</h3>
+      <div id="lucky-list"></div>
     </div>
-    <div id="final-leaderboard" class="leaderboard"></div>
-    <button class="btn btn-ghost btn-full mt-16" onclick="location.reload()">再玩一局</button>
+    <button id="btn-play-again" class="btn btn-primary mt-4">再玩一次</button>
   </div>
 </div>
 
-<!-- ── Round Result Overlay ──────────────────────────────────────────────── -->
-<div id="result-overlay" class="result-overlay" style="display:none">
-  <div class="result-card">
-    <div id="result-my-section"></div>
-    <div class="result-others-title mt-12">本轮所有玩家</div>
-    <div id="result-others"></div>
-    <div class="text-center text-muted text-sm mt-12 pulse">下一题即将开始…</div>
-  </div>
+<!-- ── DICE OVERLAY ────────────────────────────────────────────────────────── -->
+<div id="dice-overlay" class="dice-overlay hidden">
+  <div id="dice-box" class="dice-box">🎲</div>
+  <div id="dice-label" class="dice-label">掷骰子…</div>
 </div>
 
-<!-- ── Surprise Toast ────────────────────────────────────────────────────── -->
-<div id="surprise-toast" class="surprise-toast">⭐ 恭喜获得惊喜奖励！</div>
+<!-- ── Toast Container ────────────────────────────────────────────────────── -->
+<div id="toast-container"></div>
 
 <script src="/socket.io/socket.io.js"></script>
+<script src="board.js"></script>
 <script src="player.js"></script>
 </body>
 </html>

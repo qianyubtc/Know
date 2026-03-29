@@ -1,457 +1,430 @@
+// Player client logic
 const socket = io();
-
-const COLORS = ['#e74c3c','#3498db','#2ecc71','#f39c12','#9b59b6','#1abc9c','#e67e22','#e91e63','#00bcd4','#ff5722'];
 
 const state = {
   roomId: null,
-  playerId: null,
-  gameState: null,
+  myUid: null,
+  gameState: 'waiting',
   players: {},
-  surpriseSquares: [],
+  luckySquares: [],
   boardSize: 30,
-  myAnswered: false,
-  timerInterval: null,
-  timerMax: 30,
+  roundNumber: 0,
+  selectedOptions: new Set(),
+  answered: false,
+  countdownInterval: null,
+  timeLimit: 30,
+  currentQuestion: null,
 };
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
+const DICE_FACES = ['⚀', '⚁', '⚂', '⚃', '⚄', '⚅'];
 
-function showView(id) {
-  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
-  document.getElementById(id).classList.add('active');
+// ── DOM refs ─────────────────────────────────────────────────────────────────
+const views = {
+  join: document.getElementById('view-join'),
+  waiting: document.getElementById('view-waiting'),
+  game: document.getElementById('view-game'),
+  gameover: document.getElementById('view-gameover'),
+};
+
+function showView(name) {
+  Object.values(views).forEach(v => v.classList.remove('active'));
+  if (views[name]) views[name].classList.add('active');
 }
 
-function playerColor(id) {
-  let h = 0;
-  for (const c of id) h = (h * 31 + c.charCodeAt(0)) & 0xffff;
-  return COLORS[h % COLORS.length];
+// ── Toast ─────────────────────────────────────────────────────────────────────
+function toast(msg, type = 'info') {
+  const c = document.getElementById('toast-container');
+  const el = document.createElement('div');
+  el.className = `toast toast-${type}`;
+  el.textContent = msg;
+  c.appendChild(el);
+  setTimeout(() => {
+    el.classList.add('removing');
+    setTimeout(() => el.remove(), 350);
+  }, 3200);
 }
 
-function initials(id) {
-  return id.slice(0, 2).toUpperCase();
-}
-
-function rankMedal(rank) {
-  return rank === 1 ? '🥇' : rank === 2 ? '🥈' : rank === 3 ? '🥉' : `#${rank}`;
-}
-
-function diceFace(n) {
-  return ['','⚀','⚁','⚂','⚃','⚄','⚅'][n] || n;
-}
-
-// ── Join ─────────────────────────────────────────────────────────────────────
-
-function doJoin() {
+// ── JOIN ──────────────────────────────────────────────────────────────────────
+document.getElementById('btn-join').addEventListener('click', () => {
   const roomId = document.getElementById('inp-room').value.trim().toUpperCase();
-  const playerId = document.getElementById('inp-player').value.trim();
-  const password = document.getElementById('inp-password').value.trim();
-
+  const uid = document.getElementById('inp-uid').value.trim();
+  const pw = document.getElementById('inp-pw').value.trim();
   const errEl = document.getElementById('join-error');
-  errEl.style.display = 'none';
+  errEl.classList.add('hidden');
 
-  if (!roomId || roomId.length < 4) return showErr('请输入房间号');
-  if (!playerId || playerId.length < 2) return showErr('ID至少2个字符');
-  if (!password || !/^\d{6}$/.test(password)) return showErr('密码必须是6位数字');
-
-  function showErr(msg) {
-    errEl.textContent = msg;
-    errEl.style.display = 'block';
-  }
+  if (!roomId) { errEl.textContent = '请输入房间ID'; errEl.classList.remove('hidden'); return; }
+  if (!uid) { errEl.textContent = '请输入Binance UID'; errEl.classList.remove('hidden'); return; }
+  if (!/^\d{6}$/.test(pw)) { errEl.textContent = '密码必须是6位数字'; errEl.classList.remove('hidden'); return; }
 
   state.roomId = roomId;
-  state.playerId = playerId;
-  socket.emit('player:join', { roomId, playerId, password });
-}
-
-document.getElementById('inp-room').addEventListener('input', function() {
-  this.value = this.value.toUpperCase();
+  state.myUid = uid;
+  document.getElementById('btn-join').disabled = true;
+  socket.emit('player:join', { roomId, uid, password: pw });
 });
 
-// Enter key support
-['inp-room','inp-player','inp-password'].forEach(id => {
-  document.getElementById(id).addEventListener('keydown', e => {
-    if (e.key === 'Enter') doJoin();
-  });
+document.getElementById('inp-pw').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') document.getElementById('btn-join').click();
 });
-
-// ── Socket events ────────────────────────────────────────────────────────────
 
 socket.on('join:error', (msg) => {
   const errEl = document.getElementById('join-error');
   errEl.textContent = msg;
-  errEl.style.display = 'block';
+  errEl.classList.remove('hidden');
+  document.getElementById('btn-join').disabled = false;
 });
 
-socket.on('player:joined', ({ playerId, state: s }) => {
+socket.on('player:joined', ({ uid, state: s }) => {
+  state.myUid = uid;
   applyState(s);
-  document.getElementById('wait-room-info').textContent =
-    `房间 ${s.id} · 你的ID：${playerId}`;
-  showView('view-waiting');
-  renderWaitingPlayers(s.players);
+  if (s.gameState === 'waiting') {
+    showView('waiting');
+    renderWaiting(s);
+  } else if (s.gameState === 'ended') {
+    // handled by game:ended
+  } else {
+    showView('game');
+    renderGame();
+  }
+  toast('成功加入房间 ' + state.roomId, 'success');
 });
 
-socket.on('admin:state-update', (s) => {
-  applyState(s);
-  if (s.gameState === 'waiting') renderWaitingPlayers(s.players);
-  else if (s.gameState === 'playing') renderMiniScoreboard();
-});
+// ── STATE APPLICATION ─────────────────────────────────────────────────────────
+function applyState(s) {
+  state.players = s.players || {};
+  state.luckySquares = s.luckySquares || [];
+  state.boardSize = s.settings?.boardSize || 30;
+  state.timeLimit = s.settings?.timeLimit || 30;
+  state.gameState = s.gameState;
+  state.roundNumber = s.roundNumber || 0;
+}
 
+// ── WAITING VIEW ──────────────────────────────────────────────────────────────
+function renderWaiting(s) {
+  document.getElementById('wait-room-info').textContent = '房间 ID: ' + state.roomId;
+  document.getElementById('wait-uid-info').textContent = '你的UID: ' + state.myUid;
+  const list = document.getElementById('wait-player-list');
+  list.innerHTML = Object.values(s.players || {}).map(p => {
+    const color = Board.playerColor(p.id);
+    return `<div class="player-chip${p.connected ? '' : ' offline'}" style="background:${color}22;border-color:${color};">
+      <div class="dot" style="background:${color};"></div>
+      <span>${p.id}</span>
+    </div>`;
+  }).join('');
+}
+
+// ── GAME VIEW ─────────────────────────────────────────────────────────────────
+function renderGame() {
+  document.getElementById('game-room-badge').textContent = state.roomId;
+  renderBoard();
+  Board.renderMiniScoreboard('mini-scoreboard', state.players, state.boardSize, state.myUid);
+}
+
+function renderBoard() {
+  Board.render('player-board', state.boardSize, state.luckySquares, state.players, state.myUid);
+}
+
+// ── SOCKET EVENTS ─────────────────────────────────────────────────────────────
 socket.on('game:started', (s) => {
   applyState(s);
-  document.getElementById('game-room-title').textContent = `房间 ${s.id}`;
-  showView('view-game');
-  renderBoard();
-  renderMiniScoreboard();
+  showView('game');
+  renderGame();
+  toast('🎮 游戏开始!', 'success');
+  showIdle();
+});
+
+socket.on('state:update', (s) => {
+  applyState(s);
+  if (state.gameState !== 'waiting') {
+    renderBoard();
+    Board.renderMiniScoreboard('mini-scoreboard', state.players, state.boardSize, state.myUid);
+  } else {
+    renderWaiting(s);
+  }
 });
 
 socket.on('game:question', ({ question, timeLimit, remaining, roundNumber, alreadyAnswered }) => {
-  state.myAnswered = alreadyAnswered;
-  state.timerMax = timeLimit;
+  state.currentQuestion = question;
+  state.roundNumber = roundNumber;
+  state.timeLimit = timeLimit;
+  state.answered = alreadyAnswered || false;
+  state.selectedOptions.clear();
 
-  document.getElementById('game-round-info').textContent = `第 ${roundNumber} 题`;
-  document.getElementById('q-round-badge').textContent = `第 ${roundNumber} 题`;
+  showView('game');
+  showQuestionUI(question, timeLimit, remaining);
+  document.getElementById('game-status-bar').textContent = `第 ${roundNumber} 题 / 倒计时 ${remaining}s`;
+});
 
-  // Hide result overlay
-  document.getElementById('result-overlay').style.display = 'none';
+socket.on('answer:received', () => {
+  state.answered = true;
+  showAnsweredState();
+});
 
-  const qArea = document.getElementById('question-area');
-  const myPlayer = state.players[state.playerId];
+socket.on('game:resolved', (data) => {
+  applyState(data.state);
+  stopCountdown();
+  showResultUI(data);
+  runResolutionAnimation(data);
+});
 
-  if (myPlayer && myPlayer.finished) {
-    qArea.style.display = 'none';
-    return;
-  }
+socket.on('game:ended', (data) => {
+  stopCountdown();
+  applyState({ players: state.players, luckySquares: state.luckySquares, settings: { boardSize: state.boardSize, timeLimit: state.timeLimit }, gameState: 'ended', roundNumber: state.roundNumber });
+  showGameOver(data);
+});
 
-  qArea.style.display = 'block';
+// ── QUESTION UI ───────────────────────────────────────────────────────────────
+function showQuestionUI(question, timeLimit, remaining) {
+  document.getElementById('state-idle').classList.add('hidden');
+  document.getElementById('state-result').classList.add('hidden');
+  document.getElementById('state-question').classList.remove('hidden');
+
+  document.getElementById('q-round-label').textContent = `第 ${state.roundNumber} 题`;
   document.getElementById('q-text').textContent = question.text;
 
-  const labels = ['A','B','C','D'];
-  const optDiv = document.getElementById('q-options');
-  optDiv.innerHTML = '';
-  question.options.forEach((opt, i) => {
-    const btn = document.createElement('button');
-    btn.className = 'option-btn';
-    btn.innerHTML = `<span class="option-label">${labels[i]}</span><span>${opt}</span>`;
-    btn.disabled = alreadyAnswered;
-    if (!alreadyAnswered) {
-      btn.onclick = () => submitAnswer(i, question.options);
-    }
-    optDiv.appendChild(btn);
+  const optContainer = document.getElementById('q-options');
+  const labels = ['A', 'B', 'C', 'D'];
+  optContainer.innerHTML = question.options.map((opt, i) => `
+    <label class="option-item" id="opt-item-${i}">
+      <input type="checkbox" id="opt-cb-${i}" value="${i}">
+      <span class="option-label">${labels[i]}</span>
+      <span class="option-text">${opt}</span>
+    </label>
+  `).join('');
+
+  // Attach change listeners
+  question.options.forEach((_, i) => {
+    const cb = document.getElementById(`opt-cb-${i}`);
+    cb.addEventListener('change', () => {
+      const item = document.getElementById(`opt-item-${i}`);
+      if (cb.checked) {
+        state.selectedOptions.add(i);
+        item.classList.add('selected');
+      } else {
+        state.selectedOptions.delete(i);
+        item.classList.remove('selected');
+      }
+    });
   });
 
-  document.getElementById('answered-notice').style.display = alreadyAnswered ? 'block' : 'none';
-
-  startTimer(remaining, timeLimit);
-});
-
-socket.on('game:round-result', ({ roundNumber, correctIndex, correctAnswer, results, state: s }) => {
-  stopTimer();
-  applyState(s);
-  renderBoard();
-  renderMiniScoreboard();
-
-  // Mark correct/wrong options visually
-  const optBtns = document.querySelectorAll('.option-btn');
-  optBtns.forEach((btn, i) => {
-    btn.disabled = true;
-    if (i === correctIndex) btn.classList.add('correct');
-    else if (btn.classList.contains('selected')) btn.classList.add('wrong');
-  });
-
-  // Show result overlay
-  showRoundResult(results, correctIndex, correctAnswer);
-
-  // Check surprise
-  const myResult = results[state.playerId];
-  if (myResult && myResult.hitSurprise) {
-    showSurpriseToast();
+  if (state.answered) {
+    showAnsweredState();
+  } else {
+    document.getElementById('btn-submit').classList.remove('hidden');
+    document.getElementById('answered-badge').classList.add('hidden');
+    document.getElementById('btn-submit').disabled = false;
   }
 
-  // Update my position badge
-  updateMyPosBadge();
-});
+  startCountdown(timeLimit, remaining);
+}
 
-socket.on('game:ended', ({ leaderboard }) => {
-  stopTimer();
-  document.getElementById('result-overlay').style.display = 'none';
-  renderFinalLeaderboard(leaderboard);
-  showView('view-gameover');
-});
+document.getElementById('btn-submit').addEventListener('click', submitAnswer);
 
-socket.on('error', (msg) => {
-  alert('错误：' + msg);
-});
+function submitAnswer() {
+  if (state.answered) return;
+  const answers = [...state.selectedOptions].sort();
+  if (answers.length === 0) { toast('请至少选择一个答案', 'error'); return; }
+  state.answered = true;
+  showAnsweredState();
+  socket.emit('player:answer', { answers });
+}
 
-// ── State ─────────────────────────────────────────────────────────────────────
-
-function applyState(s) {
-  state.gameState = s.gameState;
-  state.players = s.players;
-  state.surpriseSquares = s.surpriseSquares || [];
-  state.boardSize = s.settings.boardSize;
-
-  const me = state.players[state.playerId];
-  if (me) {
-    updateMyPosBadge();
-    if (me.finished) {
-      document.getElementById('finished-banner').style.display = 'block';
-      document.getElementById('my-rank-num').textContent =
-        rankMedal(s.finishedPlayers.indexOf(state.playerId) + 1);
-      document.getElementById('question-area').style.display = 'none';
-      stopTimer();
-    }
+function showAnsweredState() {
+  document.getElementById('btn-submit').classList.add('hidden');
+  document.getElementById('answered-badge').classList.remove('hidden');
+  // Disable all checkboxes
+  if (state.currentQuestion) {
+    state.currentQuestion.options.forEach((_, i) => {
+      const cb = document.getElementById(`opt-cb-${i}`);
+      if (cb) cb.disabled = true;
+    });
   }
 }
 
-function updateMyPosBadge() {
-  const me = state.players[state.playerId];
-  if (!me) return;
-  document.getElementById('my-pos-badge').textContent =
-    me.finished ? '🏁 已到终点' : `📍 位置 ${me.position} / ${state.boardSize}`;
+function showIdle() {
+  document.getElementById('state-idle').classList.remove('hidden');
+  document.getElementById('state-question').classList.add('hidden');
+  document.getElementById('state-result').classList.add('hidden');
 }
 
-// ── Answer ────────────────────────────────────────────────────────────────────
+// ── COUNTDOWN ─────────────────────────────────────────────────────────────────
+function startCountdown(total, remaining) {
+  stopCountdown();
+  const circumference = 2 * Math.PI * 16; // r=16 => 100.53
+  const circle = document.getElementById('countdown-circle');
+  const numEl = document.getElementById('countdown-num');
+  let left = remaining;
 
-function submitAnswer(index, options) {
-  if (state.myAnswered) return;
-  state.myAnswered = true;
-
-  const btns = document.querySelectorAll('.option-btn');
-  btns.forEach((b, i) => {
-    b.disabled = true;
-    if (i === index) b.classList.add('selected');
-  });
-
-  document.getElementById('answered-notice').style.display = 'block';
-  socket.emit('player:answer', { answerIndex: index });
-}
-
-// ── Timer ─────────────────────────────────────────────────────────────────────
-
-function startTimer(remaining, max) {
-  stopTimer();
-  const circle = document.getElementById('timer-circle');
-  const numEl = document.getElementById('timer-num');
-  const circumference = 125.66;
-
-  let t = remaining;
   function tick() {
-    numEl.textContent = Math.max(0, t);
-    const pct = t / max;
-    circle.style.strokeDashoffset = circumference * (1 - pct);
-    circle.style.stroke = pct > 0.4 ? 'var(--primary)' : pct > 0.2 ? 'var(--danger)' : 'var(--danger)';
-    if (t <= 0) { stopTimer(); return; }
-    t--;
-    state.timerInterval = setTimeout(tick, 1000);
+    numEl.textContent = left;
+    numEl.className = 'countdown-num' + (left <= 5 ? ' urgent' : '');
+    const offset = circumference * (1 - left / total);
+    if (circle) circle.style.strokeDashoffset = offset;
+    if (left <= 0) {
+      stopCountdown();
+      return;
+    }
+    left--;
   }
   tick();
+  state.countdownInterval = setInterval(tick, 1000);
 }
 
-function stopTimer() {
-  clearTimeout(state.timerInterval);
-  state.timerInterval = null;
-}
-
-// ── Board ─────────────────────────────────────────────────────────────────────
-
-function renderBoard() {
-  const { boardSize, surpriseSquares, players } = state;
-  const myId = state.playerId;
-  const cols = 10;
-  const rows = Math.ceil(boardSize / cols);
-
-  // Players at position 0 (start)
-  const atStart = Object.values(players).filter(p => p.position === 0 && !p.finished);
-  const startArea = document.getElementById('start-area');
-  if (atStart.length > 0) {
-    startArea.innerHTML = '<span class="start-area-label">🏠 起点</span>' +
-      atStart.map(p => `
-        <span class="player-token${p.id === myId ? ' me' : ''}"
-              style="background:${playerColor(p.id)}"
-              title="${p.id}">${initials(p.id)}</span>
-      `).join('');
-    startArea.style.display = 'flex';
-  } else {
-    startArea.style.display = 'none';
+function stopCountdown() {
+  if (state.countdownInterval) {
+    clearInterval(state.countdownInterval);
+    state.countdownInterval = null;
   }
-
-  const container = document.getElementById('board-container');
-  let html = '';
-
-  // Render rows from top (high numbers) to bottom (low numbers)
-  for (let rowIdx = rows - 1; rowIdx >= 0; rowIdx--) {
-    const startNum = rowIdx * cols + 1;
-    const endNum = Math.min(startNum + cols - 1, boardSize);
-    const leftToRight = rowIdx % 2 === 0;
-
-    const nums = [];
-    for (let n = startNum; n <= endNum; n++) nums.push(n);
-    if (!leftToRight) nums.reverse();
-
-    html += '<div class="board-row">';
-    for (const n of nums) {
-      html += makeCell(n, n === boardSize, surpriseSquares.includes(n), players, myId);
-    }
-    html += '</div>';
-  }
-
-  container.innerHTML = html;
 }
 
-function makeCell(num, isFinish, isSurprise, players, myId) {
-  const here = Object.values(players).filter(p => p.position === num);
-  const meHere = here.some(p => p.id === myId);
+// ── RESULT REVEAL ─────────────────────────────────────────────────────────────
+function showResultUI(data) {
+  document.getElementById('state-question').classList.add('hidden');
+  document.getElementById('state-idle').classList.add('hidden');
+  document.getElementById('state-result').classList.remove('hidden');
 
-  let cls = 'board-cell';
-  if (isFinish) cls += ' cell-finish';
-  else if (isSurprise) cls += ' cell-surprise';
+  const myResult = data.results[state.myUid];
+  const labels = ['A', 'B', 'C', 'D'];
+  const correctLabels = data.correctIndices.map(i => labels[i]).join(', ');
+  const correctTexts = data.correctAnswers.join(' / ');
 
-  let top = '';
-  if (isFinish) top = `<span class="cell-num">${num}</span><span class="cell-icon">🏁</span>`;
-  else if (isSurprise) top = `<span class="cell-num">${num}</span><span class="cell-icon">⭐</span>`;
-  else top = `<span class="cell-num">${num}</span>`;
+  let html = `<p style="font-size:0.8rem;color:var(--text-muted);margin-bottom:0.4rem;">第 ${data.roundNumber} 题结果</p>`;
+  html += `<p style="margin-bottom:0.4rem;font-weight:600;">${data.questionText}</p>`;
+  html += `<p style="font-size:0.85rem;margin-bottom:0.75rem;color:var(--success);">✅ 正确答案: ${correctLabels} — ${correctTexts}</p>`;
 
-  const myMarker = meHere ? '<div class="cell-my-marker"></div>' : '';
-
-  let tokens = '';
-  if (here.length > 0) {
-    tokens = '<div class="cell-players">';
-    const show = here.slice(0, 3);
-    for (const p of show) {
-      tokens += `<span class="player-token${p.id === myId ? ' me' : ''}"
-        style="background:${playerColor(p.id)}" title="${p.id}">${initials(p.id)}</span>`;
-    }
-    if (here.length > 3) {
-      tokens += `<span class="player-token" style="background:#555">+${here.length - 3}</span>`;
-    }
-    tokens += '</div>';
-  }
-
-  return `<div class="${cls}">${myMarker}${top}${tokens}</div>`;
-}
-
-// ── Mini scoreboard ───────────────────────────────────────────────────────────
-
-function renderMiniScoreboard() {
-  const sorted = Object.values(state.players).sort((a, b) => {
-    if (a.finished && !b.finished) return -1;
-    if (!a.finished && b.finished) return 1;
-    if (a.finished && b.finished) return (a.finishOrder || 0) - (b.finishOrder || 0);
-    return b.position - a.position;
-  });
-
-  const el = document.getElementById('mini-scoreboard');
-  el.innerHTML = sorted.map(p => {
-    const isMe = p.id === state.playerId;
-    const cls = `mini-row${isMe ? ' me' : ''}${p.finished ? ' finished' : ''}`;
-    const posText = p.finished ? '🏁' : `${p.position}`;
-    return `<div class="${cls}">
-      <span class="mini-token" style="background:${playerColor(p.id)}">${initials(p.id)}</span>
-      <span class="mini-name" title="${p.id}">${p.id}${isMe ? ' (我)' : ''}</span>
-      <span class="mini-pos">${posText}</span>
-    </div>`;
-  }).join('');
-}
-
-// ── Waiting room ──────────────────────────────────────────────────────────────
-
-function renderWaitingPlayers(players) {
-  const el = document.getElementById('wait-player-list');
-  const list = Object.values(players);
-  if (list.length === 0) {
-    el.innerHTML = '<span class="text-muted text-sm">暂无玩家</span>';
-    return;
-  }
-  el.innerHTML = list.map(p => `
-    <div class="player-chip">
-      <span class="dot${p.connected ? '' : ' offline'}"></span>
-      <span class="player-token" style="background:${playerColor(p.id)};width:22px;height:22px">${initials(p.id)}</span>
-      <span>${p.id}</span>
-    </div>
-  `).join('');
-}
-
-// ── Round result ──────────────────────────────────────────────────────────────
-
-function showRoundResult(results, correctIndex, correctAnswer) {
-  const myResult = results[state.playerId];
-
-  let myHtml = '';
   if (myResult) {
     if (!myResult.answered) {
-      myHtml = `<div class="result-my timeout">
-        <div class="result-icon">⏰</div>
-        <div style="font-weight:700">超时未答</div>
-        <div class="result-pos">位置不变：${myResult.newPos}</div>
-      </div>`;
+      html += `<div class="result-reveal wrong-result"><span style="font-size:1.1rem;">⏱️</span> 超时未答，本轮不移动</div>`;
     } else if (myResult.correct) {
-      myHtml = `<div class="result-my correct">
-        <div class="result-icon">✅</div>
-        <div style="font-weight:700;color:var(--success)">回答正确！</div>
-        <div class="result-dice">${diceFace(myResult.dice)} 摇出 ${myResult.dice} 点</div>
-        <div class="result-move text-success">前进 ${myResult.dice} 步</div>
-        <div class="result-pos">${myResult.oldPos} → ${myResult.newPos}</div>
-        ${myResult.hitSurprise ? '<div style="color:var(--primary);font-weight:700;margin-top:6px">⭐ 踩到惊喜格！</div>' : ''}
-        ${myResult.justFinished ? '<div style="color:var(--primary);font-weight:700;margin-top:6px">🏁 到达终点！</div>' : ''}
-      </div>`;
+      html += `<div class="result-reveal correct-result"><span style="font-size:1.1rem;">🎉</span> 回答正确！掷出 <b>${myResult.dice}</b> 点，前进到第 <b>${myResult.newPos}</b> 格</div>`;
     } else {
-      myHtml = `<div class="result-my wrong">
-        <div class="result-icon">❌</div>
-        <div style="font-weight:700;color:var(--danger)">回答错误</div>
-        <div class="text-sm text-muted">正确答案：${correctAnswer}</div>
-        <div class="result-dice">${diceFace(myResult.dice)} 摇出 ${myResult.dice} 点</div>
-        <div class="result-move text-danger">后退 ${myResult.dice} 步</div>
-        <div class="result-pos">${myResult.oldPos} → ${myResult.newPos}</div>
-      </div>`;
+      html += `<div class="result-reveal wrong-result"><span style="font-size:1.1rem;">❌</span> 回答错误，停留在第 <b>${myResult.oldPos}</b> 格</div>`;
     }
   }
 
-  document.getElementById('result-my-section').innerHTML = myHtml;
+  const resultEl = document.getElementById('result-reveal');
+  resultEl.innerHTML = html;
+  resultEl.className = 'result-reveal' + (myResult?.correct ? ' correct-result' : myResult?.answered === false ? '' : ' wrong-result');
 
-  const othersHtml = Object.entries(results)
-    .filter(([id]) => id !== state.playerId)
-    .map(([id, r]) => {
-      let icon, detail;
-      if (!r.answered) {
-        icon = '⏰'; detail = '超时';
-      } else if (r.correct) {
-        icon = '✅'; detail = `+${r.dice} → ${r.newPos}${r.hitSurprise ? ' ⭐' : ''}${r.justFinished ? ' 🏁' : ''}`;
-      } else {
-        icon = '❌'; detail = `-${r.dice} → ${r.newPos}`;
+  document.getElementById('game-status-bar').textContent = `第 ${data.roundNumber} 题结束 | 等待下一题…`;
+
+  if (data.unusedLeft === 0) {
+    toast('题库已用完，管理员可结束游戏', 'info');
+  }
+}
+
+// ── RESOLUTION ANIMATION ──────────────────────────────────────────────────────
+function runResolutionAnimation(data) {
+  const myResult = data.results[state.myUid];
+  if (!myResult || !myResult.correct || myResult.dice === null) {
+    // Wrong/timeout: just re-render board
+    renderBoard();
+    Board.renderMiniScoreboard('mini-scoreboard', data.state.players, state.boardSize, state.myUid);
+    return;
+  }
+
+  // Show dice animation first
+  showDiceAnimation(myResult.dice, () => {
+    // Animate movement step by step
+    const localPlayers = JSON.parse(JSON.stringify(data.state.players));
+    // Start from old position for animation
+    if (localPlayers[state.myUid]) localPlayers[state.myUid].position = myResult.oldPos;
+    renderBoardWithPlayers(localPlayers);
+
+    Board.animateMovement(
+      state.myUid,
+      myResult.oldPos,
+      myResult.newPos,
+      state.boardSize,
+      state.luckySquares,
+      localPlayers,
+      state.myUid,
+      'player-board',
+      null, // onStep
+      () => {
+        // Final render with authoritative state
+        applyState(data.state);
+        renderBoard();
+        Board.renderMiniScoreboard('mini-scoreboard', state.players, state.boardSize, state.myUid);
+
+        // Lucky square animation
+        if (myResult.hitLucky) {
+          Board.triggerLuckyAnimation(myResult.newPos);
+          toast('⭐ 踩到幸运格子!', 'success');
+        }
+
+        // Finished
+        if (myResult.justFinished) {
+          toast(`🏁 到达终点！第 ${data.state.players[state.myUid]?.finishOrder} 名！`, 'success');
+        }
       }
-      return `<div class="result-other-row">
-        <span class="player-token" style="background:${playerColor(id)};width:22px;height:22px">${initials(id)}</span>
-        <span class="result-player-name">${id}</span>
-        <span>${icon}</span>
-        <span class="text-muted text-sm">${detail}</span>
-      </div>`;
-    }).join('');
-
-  document.getElementById('result-others').innerHTML = othersHtml || '<div class="text-muted text-sm">（无其他玩家数据）</div>';
-  document.getElementById('result-overlay').style.display = 'flex';
+    );
+  });
 }
 
-// ── Surprise toast ────────────────────────────────────────────────────────────
-
-function showSurpriseToast() {
-  const el = document.getElementById('surprise-toast');
-  el.classList.add('show');
-  setTimeout(() => el.classList.remove('show'), 3000);
+function renderBoardWithPlayers(players) {
+  // Temporarily render with given players (for animation frames)
+  Board.render('player-board', state.boardSize, state.luckySquares, players, state.myUid);
 }
 
-// ── Final leaderboard ─────────────────────────────────────────────────────────
+// ── DICE ANIMATION ────────────────────────────────────────────────────────────
+function showDiceAnimation(result, onDone) {
+  const overlay = document.getElementById('dice-overlay');
+  const box = document.getElementById('dice-box');
+  const label = document.getElementById('dice-label');
+  overlay.classList.remove('hidden');
+  box.classList.remove('settled');
+  box.textContent = '🎲';
+  label.textContent = '掷骰子…';
 
-function renderFinalLeaderboard(leaderboard) {
-  const el = document.getElementById('final-leaderboard');
-  el.innerHTML = leaderboard.map(p => {
-    const rankClass = p.rank === 1 ? 'gold' : p.rank === 2 ? 'silver' : p.rank === 3 ? 'bronze' : '';
-    const isMe = p.id === state.playerId;
-    return `<div class="lb-row${isMe ? '" style="border:1px solid var(--primary)' : ''}">
-      <div class="lb-rank ${rankClass}">${rankMedal(p.rank)}</div>
-      <span class="player-token" style="background:${playerColor(p.id)};width:26px;height:26px;font-size:0.65rem">${initials(p.id)}</span>
-      <div class="lb-name">${p.id}${isMe ? ' （我）' : ''}</div>
-      <div class="lb-pos">${p.finished ? '🏁 终点' : `位置 ${p.position}`}</div>
-      ${p.surpriseCount > 0 ? `<span class="lb-badge surprise">⭐×${p.surpriseCount}</span>` : ''}
+  let spins = 0;
+  const maxSpins = 14;
+  const spinInterval = setInterval(() => {
+    box.textContent = DICE_FACES[Math.floor(Math.random() * 6)];
+    spins++;
+    if (spins >= maxSpins) {
+      clearInterval(spinInterval);
+      box.textContent = DICE_FACES[result - 1];
+      box.classList.add('settled');
+      label.textContent = `掷出 ${result} 点！`;
+      setTimeout(() => {
+        overlay.classList.add('hidden');
+        box.classList.remove('settled');
+        if (onDone) onDone();
+      }, 800);
+    }
+  }, 80);
+}
+
+// ── GAME OVER ─────────────────────────────────────────────────────────────────
+function showGameOver(data) {
+  showView('gameover');
+  const lbEl = document.getElementById('gameover-leaderboard');
+  const rankEmojis = ['🥇', '🥈', '🥉'];
+
+  lbEl.innerHTML = data.leaderboard.map((entry, i) => {
+    const isMe = entry.id === state.myUid;
+    const rankClass = i < 3 ? `top${i + 1}` : '';
+    const rankDisplay = rankEmojis[i] || `#${entry.rank}`;
+    return `<div class="lb-row ${rankClass}${isMe ? ' me' : ''}" style="${isMe ? 'border-color:var(--primary);background:rgba(255,215,0,0.12);' : ''}">
+      <div class="lb-rank">${rankDisplay}</div>
+      <div class="token" style="background:${Board.playerColor(entry.id)};">${Board.initials(entry.id)}</div>
+      <div class="lb-name">${entry.id}${isMe ? ' (你)' : ''}</div>
+      <div class="lb-detail">${entry.finished ? '🏁 完赛' : `位置 ${entry.position}`}${entry.luckyCount > 0 ? ` ⭐×${entry.luckyCount}` : ''}</div>
     </div>`;
   }).join('');
+
+  if (data.luckyPlayers && data.luckyPlayers.length > 0) {
+    document.getElementById('gameover-lucky').classList.remove('hidden');
+    document.getElementById('lucky-list').innerHTML = data.luckyPlayers.map(p =>
+      `<div class="lb-row">
+        <div class="token" style="background:${Board.playerColor(p.id)};">${Board.initials(p.id)}</div>
+        <div class="lb-name">${p.id}</div>
+        <div class="lb-detail">⭐ 幸运格 ×${p.luckyCount}</div>
+      </div>`
+    ).join('');
+  }
 }
+
+document.getElementById('btn-play-again').addEventListener('click', () => {
+  location.reload();
+});

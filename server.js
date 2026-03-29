@@ -3,6 +3,7 @@ const http = require('http');
 const { Server } = require('socket.io');
 const crypto = require('crypto');
 const path = require('path');
+const multer = require('multer');
 
 const app = express();
 const server = http.createServer(app);
@@ -10,6 +11,8 @@ const io = new Server(server);
 
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.json());
+
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
 const rooms = {};
 
@@ -26,7 +29,7 @@ function publicState(room) {
       finished: p.finished,
       finishOrder: p.finishOrder,
       connected: p.connected,
-      surpriseCount: p.surpriseCount,
+      luckyCount: p.luckyCount,
     };
   }
   return {
@@ -34,35 +37,40 @@ function publicState(room) {
     settings: room.settings,
     gameState: room.gameState,
     players,
-    surpriseSquares: room.surpriseSquares,
+    luckySquares: room.luckySquares,
     finishedPlayers: room.finishedPlayers,
     roundNumber: room.roundNumber,
+    questionCount: room.questions.length,
+    usedCount: room.usedQuestionIds.size,
   };
 }
 
-// ── REST API ────────────────────────────────────────────────────────────────
+// ── REST API ─────────────────────────────────────────────────────────────────
 
 app.post('/api/rooms', (req, res) => {
-  const { adminPassword, boardSize, timeLimit, minPlayersToEnd } = req.body;
+  const { adminPassword, boardSize, timeLimit, luckySquares } = req.body;
   if (!adminPassword) return res.status(400).json({ error: '需要管理员密码' });
   const roomId = genId();
   rooms[roomId] = {
     id: roomId,
     adminPasswordHash: hash(adminPassword),
     settings: {
-      boardSize: Math.max(10, Math.min(100, parseInt(boardSize) || 30)),
-      timeLimit: Math.max(5, Math.min(120, parseInt(timeLimit) || 30)),
-      minPlayersToEnd: Math.max(1, parseInt(minPlayersToEnd) || 3),
+      boardSize: Math.max(10, Math.min(200, parseInt(boardSize) || 30)),
+      timeLimit: Math.max(5, Math.min(300, parseInt(timeLimit) || 30)),
     },
     questions: [],
-    surpriseSquares: [],
+    luckySquares: [],
     players: {},
     adminSocketId: null,
     gameState: 'waiting',
-    currentRound: null,
+    currentQuestion: null,
     finishedPlayers: [],
     roundNumber: 0,
+    usedQuestionIds: new Set(),
   };
+  if (Array.isArray(luckySquares)) {
+    rooms[roomId].luckySquares = luckySquares.map(Number).filter(n => n > 0);
+  }
   res.json({ roomId });
 });
 
@@ -74,9 +82,10 @@ app.post('/api/rooms/:id/verify', (req, res) => {
   res.json({
     settings: room.settings,
     questions: room.questions,
-    surpriseSquares: room.surpriseSquares,
+    luckySquares: room.luckySquares,
     gameState: room.gameState,
     playerCount: Object.keys(room.players).length,
+    usedCount: room.usedQuestionIds.size,
   });
 });
 
@@ -85,12 +94,10 @@ app.put('/api/rooms/:id/settings', (req, res) => {
   if (!room) return res.status(404).json({ error: '房间不存在' });
   if (hash(req.body.adminPassword || '') !== room.adminPasswordHash)
     return res.status(401).json({ error: '密码错误' });
-  if (room.gameState !== 'waiting')
-    return res.status(400).json({ error: '游戏已开始，无法修改设置' });
-  const { boardSize, timeLimit, minPlayersToEnd } = req.body;
-  if (boardSize) room.settings.boardSize = Math.max(10, Math.min(100, parseInt(boardSize)));
-  if (timeLimit) room.settings.timeLimit = Math.max(5, Math.min(120, parseInt(timeLimit)));
-  if (minPlayersToEnd) room.settings.minPlayersToEnd = Math.max(1, parseInt(minPlayersToEnd));
+  const { boardSize, timeLimit } = req.body;
+  if (boardSize !== undefined) room.settings.boardSize = Math.max(10, Math.min(200, parseInt(boardSize)));
+  if (timeLimit !== undefined) room.settings.timeLimit = Math.max(5, Math.min(300, parseInt(timeLimit)));
+  io.to('room:' + room.id).emit('state:update', publicState(room));
   res.json({ ok: true, settings: room.settings });
 });
 
@@ -99,17 +106,19 @@ app.post('/api/rooms/:id/questions', (req, res) => {
   if (!room) return res.status(404).json({ error: '房间不存在' });
   if (hash(req.body.adminPassword || '') !== room.adminPasswordHash)
     return res.status(401).json({ error: '密码错误' });
-  const { text, options, correctIndex } = req.body;
+  const { text, options, correctIndices } = req.body;
   if (!text || !Array.isArray(options) || options.length < 2 || options.length > 4)
     return res.status(400).json({ error: '题目格式错误（需2-4个选项）' });
-  const ci = parseInt(correctIndex);
-  if (isNaN(ci) || ci < 0 || ci >= options.length)
+  if (!Array.isArray(correctIndices) || correctIndices.length === 0)
+    return res.status(400).json({ error: '需要至少一个正确答案' });
+  const sorted = [...new Set(correctIndices.map(Number))].sort();
+  if (sorted.some(ci => ci < 0 || ci >= options.length))
     return res.status(400).json({ error: '正确答案索引无效' });
   room.questions.push({
     id: Date.now().toString() + Math.random().toString(36).substr(2, 4),
     text: text.trim(),
     options: options.map(o => String(o).trim()),
-    correctIndex: ci,
+    correctIndices: sorted,
   });
   res.json({ ok: true, questions: room.questions });
 });
@@ -120,10 +129,11 @@ app.delete('/api/rooms/:id/questions/:qid', (req, res) => {
   if (hash(req.body.adminPassword || '') !== room.adminPasswordHash)
     return res.status(401).json({ error: '密码错误' });
   room.questions = room.questions.filter(q => q.id !== req.params.qid);
+  room.usedQuestionIds.delete(req.params.qid);
   res.json({ ok: true, questions: room.questions });
 });
 
-app.put('/api/rooms/:id/surprise-squares', (req, res) => {
+app.put('/api/rooms/:id/lucky-squares', (req, res) => {
   const room = rooms[req.params.id];
   if (!room) return res.status(404).json({ error: '房间不存在' });
   if (hash(req.body.adminPassword || '') !== room.adminPasswordHash)
@@ -131,11 +141,104 @@ app.put('/api/rooms/:id/surprise-squares', (req, res) => {
   const squares = (req.body.squares || [])
     .map(n => parseInt(n))
     .filter(n => n > 0 && n < room.settings.boardSize);
-  room.surpriseSquares = [...new Set(squares)];
-  res.json({ ok: true, surpriseSquares: room.surpriseSquares });
+  room.luckySquares = [...new Set(squares)];
+  io.to('room:' + room.id).emit('state:update', publicState(room));
+  res.json({ ok: true, luckySquares: room.luckySquares });
 });
 
-// ── SOCKET.IO ───────────────────────────────────────────────────────────────
+// Question import endpoint
+app.post('/api/rooms/:id/import', upload.single('file'), async (req, res) => {
+  const room = rooms[req.params.id];
+  if (!room) return res.status(404).json({ error: '房间不存在' });
+  if (hash(req.body.adminPassword || '') !== room.adminPasswordHash)
+    return res.status(401).json({ error: '密码错误' });
+  if (!req.file) return res.status(400).json({ error: '没有上传文件' });
+
+  try {
+    let text = '';
+    const mime = req.file.mimetype;
+    const ext = path.extname(req.file.originalname).toLowerCase();
+
+    if (ext === '.pdf' || mime === 'application/pdf') {
+      const pdfParse = require('pdf-parse');
+      const data = await pdfParse(req.file.buffer);
+      text = data.text;
+    } else if (ext === '.docx' || mime === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
+      const mammoth = require('mammoth');
+      const result = await mammoth.extractRawText({ buffer: req.file.buffer });
+      text = result.value;
+    } else {
+      text = req.file.buffer.toString('utf-8');
+    }
+
+    const imported = parseQuestionsFromText(text);
+    if (imported.length === 0) return res.status(400).json({ error: '未找到可解析的题目，请检查格式' });
+
+    for (const q of imported) {
+      room.questions.push(q);
+    }
+
+    res.json({ ok: true, imported: imported.length, questions: room.questions });
+  } catch (err) {
+    console.error('Import error:', err);
+    res.status(500).json({ error: '文件解析失败: ' + err.message });
+  }
+});
+
+function parseQuestionsFromText(text) {
+  const questions = [];
+  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+
+  let current = null;
+
+  for (const line of lines) {
+    const qMatch = line.match(/^Q:\s*(.+)/i);
+    const optMatch = line.match(/^([A-D])\.\s*(.+)/i);
+
+    if (qMatch) {
+      if (current && current.options.length >= 2) {
+        const correctIndices = [];
+        current.options.forEach((opt, i) => {
+          if (opt.correct) correctIndices.push(i);
+        });
+        if (correctIndices.length > 0) {
+          questions.push({
+            id: Date.now().toString() + Math.random().toString(36).substr(2, 4),
+            text: current.text,
+            options: current.options.map(o => o.text),
+            correctIndices,
+          });
+        }
+      }
+      current = { text: qMatch[1].trim(), options: [] };
+    } else if (optMatch && current) {
+      const raw = optMatch[2];
+      const correct = raw.endsWith('*');
+      const text2 = correct ? raw.slice(0, -1).trim() : raw.trim();
+      current.options.push({ text: text2, correct });
+    }
+  }
+
+  // Push last question
+  if (current && current.options.length >= 2) {
+    const correctIndices = [];
+    current.options.forEach((opt, i) => {
+      if (opt.correct) correctIndices.push(i);
+    });
+    if (correctIndices.length > 0) {
+      questions.push({
+        id: Date.now().toString() + Math.random().toString(36).substr(2, 4),
+        text: current.text,
+        options: current.options.map(o => o.text),
+        correctIndices,
+      });
+    }
+  }
+
+  return questions;
+}
+
+// ── SOCKET.IO ─────────────────────────────────────────────────────────────────
 
 io.on('connection', (socket) => {
 
@@ -152,55 +255,55 @@ io.on('connection', (socket) => {
     socket.emit('admin:joined', publicState(room));
   });
 
-  socket.on('player:join', ({ roomId, playerId, password }) => {
+  socket.on('player:join', ({ roomId, uid, password }) => {
     const room = rooms[roomId];
     if (!room) return socket.emit('join:error', '房间不存在');
-    if (!playerId || !password) return socket.emit('join:error', '请输入ID和密码');
+    if (!uid || !password) return socket.emit('join:error', '请输入UID和密码');
 
     const pwHash = hash(password);
-    const existing = room.players[playerId];
+    const existing = room.players[uid];
 
     if (existing) {
-      if (existing.passwordHash !== pwHash) return socket.emit('join:error', '密码错误');
+      if (existing.passwordHash !== pwHash) return socket.emit('join:error', '密码错误（与首次加入不一致）');
       existing.socketId = socket.id;
       existing.connected = true;
     } else {
       if (room.gameState !== 'waiting') return socket.emit('join:error', '游戏已开始，无法加入');
-      room.players[playerId] = {
-        id: playerId,
+      room.players[uid] = {
+        id: uid,
         passwordHash: pwHash,
         socketId: socket.id,
         position: 0,
         finished: false,
         finishOrder: null,
         connected: true,
-        surpriseCount: 0,
+        luckyCount: 0,
         answeredThisRound: false,
       };
     }
 
-    socket.data.playerId = playerId;
+    socket.data.playerId = uid;
     socket.data.roomId = roomId;
     socket.join('room:' + roomId);
 
-    socket.emit('player:joined', { playerId, state: publicState(room) });
+    socket.emit('player:joined', { uid, state: publicState(room) });
 
-    if (room.gameState === 'playing' && room.currentRound) {
-      const elapsed = Math.floor((Date.now() - room.currentRound.startTime) / 1000);
-      const remaining = room.settings.timeLimit - elapsed;
-      if (remaining > 0) {
-        socket.emit('game:question', {
-          question: {
-            id: room.currentRound.question.id,
-            text: room.currentRound.question.text,
-            options: room.currentRound.question.options,
-          },
-          timeLimit: room.settings.timeLimit,
-          remaining,
-          roundNumber: room.roundNumber,
-          alreadyAnswered: room.players[playerId]?.answeredThisRound || false,
-        });
-      }
+    // Rejoin mid-game: send current question if active
+    if (room.gameState === 'question' && room.currentQuestion) {
+      const elapsed = Math.floor((Date.now() - room.currentQuestion.startTime) / 1000);
+      const remaining = Math.max(0, room.settings.timeLimit - elapsed);
+      socket.emit('game:question', {
+        question: {
+          id: room.currentQuestion.question.id,
+          text: room.currentQuestion.question.text,
+          options: room.currentQuestion.question.options,
+          optionCount: room.currentQuestion.question.options.length,
+        },
+        timeLimit: room.settings.timeLimit,
+        remaining,
+        roundNumber: room.roundNumber,
+        alreadyAnswered: room.players[uid]?.answeredThisRound || false,
+      });
     }
 
     if (room.gameState === 'ended') {
@@ -210,21 +313,28 @@ io.on('connection', (socket) => {
     io.to('admin:' + roomId).emit('admin:state-update', publicState(room));
   });
 
-  socket.on('player:answer', ({ answerIndex }) => {
+  socket.on('player:answer', ({ answers }) => {
     const { roomId, playerId } = socket.data;
     if (!roomId || !playerId) return;
     const room = rooms[roomId];
-    if (!room || room.gameState !== 'playing' || !room.currentRound) return;
+    if (!room || room.gameState !== 'question' || !room.currentQuestion) return;
     const player = room.players[playerId];
     if (!player || player.finished || player.answeredThisRound) return;
 
-    player.answeredThisRound = true;
-    room.currentRound.answers[playerId] = parseInt(answerIndex);
+    const sortedAnswer = Array.isArray(answers)
+      ? [...new Set(answers.map(Number))].sort()
+      : [];
 
-    const activePlayers = Object.values(room.players).filter(p => !p.finished);
+    player.answeredThisRound = true;
+    room.currentQuestion.answers[playerId] = sortedAnswer;
+
+    socket.emit('answer:received');
+
+    // Check if all active players answered
+    const activePlayers = Object.values(room.players).filter(p => !p.finished && p.connected);
     if (activePlayers.every(p => p.answeredThisRound)) {
-      clearTimeout(room.currentRound.timerId);
-      resolveRound(room);
+      clearTimeout(room.currentQuestion.timerId);
+      resolveQuestion(room);
     }
   });
 
@@ -235,9 +345,16 @@ io.on('connection', (socket) => {
     if (Object.keys(room.players).length < 1) return socket.emit('error', '没有玩家加入');
     if (room.questions.length < 1) return socket.emit('error', '题库为空，请先添加题目');
 
-    room.gameState = 'playing';
+    room.gameState = 'ready';
     io.to('room:' + room.id).emit('game:started', publicState(room));
-    setTimeout(() => startRound(room), 2000);
+    io.to('admin:' + room.id).emit('admin:state-update', publicState(room));
+  });
+
+  socket.on('admin:next-question', () => {
+    const room = rooms[socket.data.roomId];
+    if (!room || !socket.data.isAdmin) return;
+    if (room.gameState !== 'ready') return socket.emit('error', '状态不对，无法发题');
+    startQuestion(room);
   });
 
   socket.on('admin:end-game', () => {
@@ -260,67 +377,80 @@ io.on('connection', (socket) => {
   });
 });
 
-// ── GAME LOGIC ──────────────────────────────────────────────────────────────
+// ── GAME LOGIC ─────────────────────────────────────────────────────────────────
 
-function startRound(room) {
-  if (room.gameState !== 'playing') return;
+function startQuestion(room) {
+  if (room.gameState !== 'ready') return;
 
-  const activePlayers = Object.values(room.players).filter(p => !p.finished);
-  if (activePlayers.length === 0) { endGame(room); return; }
+  const unused = room.questions.filter(q => !room.usedQuestionIds.has(q.id));
+  if (unused.length === 0) {
+    io.to('admin:' + room.id).emit('admin:no-questions', { message: '题库已用完' });
+    return;
+  }
 
-  const q = room.questions[Math.floor(Math.random() * room.questions.length)];
+  const q = unused[Math.floor(Math.random() * unused.length)];
+  room.usedQuestionIds.add(q.id);
   room.roundNumber++;
 
   for (const p of Object.values(room.players)) p.answeredThisRound = false;
 
-  room.currentRound = {
+  room.gameState = 'question';
+  room.currentQuestion = {
     question: q,
     answers: {},
     startTime: Date.now(),
     timerId: null,
   };
 
-  io.to('room:' + room.id).emit('game:question', {
-    question: { id: q.id, text: q.text, options: q.options },
+  const payload = {
+    question: {
+      id: q.id,
+      text: q.text,
+      options: q.options,
+      optionCount: q.options.length,
+    },
     timeLimit: room.settings.timeLimit,
     remaining: room.settings.timeLimit,
     roundNumber: room.roundNumber,
-    alreadyAnswered: false,
-  });
+  };
 
-  room.currentRound.timerId = setTimeout(() => resolveRound(room), room.settings.timeLimit * 1000);
+  io.to('room:' + room.id).emit('game:question', { ...payload, alreadyAnswered: false });
+  io.to('admin:' + room.id).emit('admin:state-update', publicState(room));
+
+  room.currentQuestion.timerId = setTimeout(() => {
+    if (room.gameState === 'question') resolveQuestion(room);
+  }, room.settings.timeLimit * 1000);
 }
 
-function resolveRound(room) {
-  if (!room.currentRound) return;
+function resolveQuestion(room) {
+  if (!room.currentQuestion || room.gameState !== 'question') return;
 
-  const q = room.currentRound.question;
+  room.gameState = 'resolving';
+  const q = room.currentQuestion.question;
   const results = {};
 
   for (const player of Object.values(room.players)) {
     if (player.finished) continue;
 
     const oldPos = player.position;
-    const answered = player.answeredThisRound;
-    const correct = answered && room.currentRound.answers[player.id] === q.correctIndex;
+    const submittedAnswers = room.currentQuestion.answers[player.id] || [];
+    const correct = arraysEqual(submittedAnswers, q.correctIndices);
 
     let dice = null;
     let newPos = oldPos;
 
-    if (answered) {
+    if (correct) {
       dice = roll();
-      newPos = correct
-        ? Math.min(oldPos + dice, room.settings.boardSize)
-        : Math.max(oldPos - dice, 0);
+      newPos = Math.min(oldPos + dice, room.settings.boardSize);
     }
+    // Wrong or timeout = stay (no backward movement)
 
     player.position = newPos;
 
-    let hitSurprise = null;
-    if (newPos !== oldPos && newPos > 0 && newPos < room.settings.boardSize
-        && room.surpriseSquares.includes(newPos)) {
-      player.surpriseCount++;
-      hitSurprise = newPos;
+    let hitLucky = false;
+    if (newPos !== oldPos && room.luckySquares.includes(newPos)) {
+      player.luckyCount++;
+      hitLucky = true;
     }
 
     let justFinished = false;
@@ -331,51 +461,82 @@ function resolveRound(room) {
       justFinished = true;
     }
 
-    results[player.id] = { answered, correct, dice, oldPos, newPos, hitSurprise, justFinished };
+    results[player.id] = {
+      answered: player.answeredThisRound,
+      correct,
+      dice,
+      oldPos,
+      newPos,
+      hitLucky,
+      justFinished,
+      submittedAnswers,
+    };
   }
 
-  room.currentRound = null;
+  room.currentQuestion = null;
+  room.gameState = 'ready';
 
-  io.to('room:' + room.id).emit('game:round-result', {
+  const unusedLeft = room.questions.filter(q2 => !room.usedQuestionIds.has(q2.id)).length;
+
+  const payload = {
     roundNumber: room.roundNumber,
-    correctIndex: q.correctIndex,
-    correctAnswer: q.options[q.correctIndex],
+    correctIndices: q.correctIndices,
+    correctAnswers: q.correctIndices.map(i => q.options[i]),
+    questionText: q.text,
+    questionOptions: q.options,
     results,
     state: publicState(room),
-  });
+    unusedLeft,
+  };
 
-  if (room.finishedPlayers.length >= room.settings.minPlayersToEnd) {
-    io.to('admin:' + room.id).emit('admin:can-end', {
-      finishedCount: room.finishedPlayers.length,
-    });
-  }
-
-  setTimeout(() => startRound(room), 4000);
+  io.to('room:' + room.id).emit('game:resolved', payload);
+  io.to('admin:' + room.id).emit('admin:state-update', publicState(room));
 }
 
 function endGame(room) {
-  if (room.currentRound) {
-    clearTimeout(room.currentRound.timerId);
-    room.currentRound = null;
+  if (room.currentQuestion) {
+    clearTimeout(room.currentQuestion.timerId);
+    room.currentQuestion = null;
   }
   room.gameState = 'ended';
   io.to('room:' + room.id).emit('game:ended', buildLeaderboard(room));
+  io.to('admin:' + room.id).emit('admin:state-update', publicState(room));
 }
 
 function buildLeaderboard(room) {
   const finished = room.finishedPlayers.map((id, i) => ({
-    id, rank: i + 1, position: room.settings.boardSize,
-    finished: true, surpriseCount: room.players[id]?.surpriseCount || 0,
+    id,
+    rank: i + 1,
+    position: room.settings.boardSize,
+    finished: true,
+    luckyCount: room.players[id]?.luckyCount || 0,
   }));
   const unfinished = Object.values(room.players)
     .filter(p => !p.finished)
     .sort((a, b) => b.position - a.position)
     .map((p, i) => ({
-      id: p.id, rank: finished.length + i + 1, position: p.position,
-      finished: false, surpriseCount: p.surpriseCount,
+      id: p.id,
+      rank: finished.length + i + 1,
+      position: p.position,
+      finished: false,
+      luckyCount: p.luckyCount,
     }));
-  return { leaderboard: [...finished, ...unfinished] };
+  return {
+    leaderboard: [...finished, ...unfinished],
+    luckyPlayers: Object.values(room.players)
+      .filter(p => p.luckyCount > 0)
+      .sort((a, b) => b.luckyCount - a.luckyCount)
+      .map(p => ({ id: p.id, luckyCount: p.luckyCount })),
+  };
+}
+
+function arraysEqual(a, b) {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
 }
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`Server running: http://localhost:${PORT}`));
+server.listen(PORT, () => console.log(`Trivia Board Game v2 running: http://localhost:${PORT}`));
