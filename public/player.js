@@ -1,5 +1,5 @@
 // Player client logic
-const socket = io();
+const socket = io({ transports: ['websocket'], upgrade: false });
 
 const state = {
   roomId: null,
